@@ -1,0 +1,1172 @@
+<meta charset="utf-8">
+<title>Halftone Field</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500&family=Nanum+Myeongjo:wght@400;700;800&display=swap">
+<style>
+  :root{
+    --paper:#FFFFFF;
+    --ink:#0A0A0A;
+    --ink-rgb:10,10,10;
+    --muted:#9A9A9A;
+    --rule:#E4E4E4;
+  }
+
+  html,body{height:100%;}
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:"IBM Plex Sans","Helvetica Neue",Arial,sans-serif;
+    overflow:hidden;
+    cursor:none;
+  }
+  #field{position:fixed;inset:0;display:block;width:100%;height:100%;}
+
+  #resetBtn{
+    position:fixed;
+    left:20px; top:30px;
+    z-index:6;
+    width:28px; height:28px;
+    display:flex; align-items:center; justify-content:center;
+    border:none;
+    background:none;
+    color:#bbb;
+    font-size:16px;
+    line-height:1;
+    cursor:pointer;
+    opacity:.4;
+    transition:opacity .2s ease, color .2s ease;
+  }
+  #resetBtn:hover{ opacity:.7; color:#999; }
+
+  .pw-overlay{
+    position:fixed; inset:0; z-index:7;
+    background:rgba(255,255,255,.55);
+    display:flex; align-items:center; justify-content:center;
+    cursor:default;
+  }
+  .pw-overlay[hidden]{ display:none; }
+  .pw-card{
+    background:#fff;
+    border:1.5px solid #000;
+    border-radius:4px;
+    padding:28px 30px;
+    width:min(260px, 82vw);
+    display:flex; flex-direction:column; gap:12px;
+    font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
+  }
+  .pw-label{ font:400 14px/1.3 inherit; color:#000; }
+  .pw-card input{
+    font:400 16px/1 inherit;
+    letter-spacing:.12em;
+    padding:8px 2px;
+    border:none; border-bottom:1.5px solid #000;
+    outline:none; background:none; color:#000;
+  }
+  .pw-err{ font:400 12px/1.3 inherit; color:#b33; }
+
+  .hint-text{
+    position:fixed;
+    left:50%; bottom:64px;
+    transform:translate(-50%, 0);
+    z-index:4;
+    font:400 15px/1.4 "Helvetica Neue",Helvetica,Arial,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;
+    letter-spacing:.02em;
+    color:var(--muted);
+    pointer-events:none;
+    text-align:center;
+    animation: hintFloat 5s ease-in-out infinite, hintBlink 5s ease-in-out infinite;
+  }
+  @keyframes hintBlink{
+    0%, 100% { opacity:.35; }
+    50% { opacity:.85; }
+  }
+  @keyframes hintFloat{
+    0%, 100% { transform:translate(-50%, 0); }
+    50% { transform:translate(-50%, -6px); }
+  }
+
+  .answer-input{
+    position:fixed;
+    left:0; top:0;
+    width:0; height:46px;
+    margin:0;
+    padding:0;
+    border:none;
+    outline:none;
+    resize:none;
+    overflow:hidden;
+    background:transparent;
+    color:var(--ink);
+    caret-color:var(--ink);
+    font-family:"Nanum Myeongjo",serif;
+    font-weight:700;
+    font-size:15px;
+    line-height:46px;
+    white-space:pre-wrap;
+    overflow-wrap:anywhere;
+    word-break:break-all;
+  }
+</style>
+
+<canvas id="field"></canvas>
+
+<button id="resetBtn" aria-label="다시 시작" title="다시 시작">&#8635;</button>
+
+<div class="pw-overlay" id="pwOverlay" hidden>
+  <div class="pw-card">
+    <div class="pw-label">Enter your password.</div>
+    <input type="password" id="pwInput" inputmode="numeric" autocomplete="off" maxlength="12">
+    <div class="pw-err" id="pwErr" hidden>암호가 올바르지 않습니다</div>
+  </div>
+</div>
+
+<div class="hint-text" id="hintText">숨어있는 키워드를 발견해 보세요.</div>
+
+<textarea id="answerInput" class="answer-input" rows="1" wrap="soft" autocomplete="off" autocapitalize="off" spellcheck="false" aria-hidden="true" tabindex="-1"></textarea>
+
+<script>
+(function(){
+  var cv = document.getElementById('field');
+  var ctx = cv.getContext('2d');
+  var base = document.createElement('canvas');
+  var bctx = base.getContext('2d');
+  var trail = document.createElement('canvas');
+  var tctx = trail.getContext('2d');
+
+  var PITCH = 7;
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var W = 0, H = 0, DPR = 1, cols = 0, rows = 0, n = 0;
+  var px, py, pr, pa, field, pa0, pr0;
+  var fadeAcc = 0;
+  var inkRGB = '10,10,10';
+  var radius = 150, deposits = 0, densityTxt = '—';
+
+  /* irregular, condensed silhouette for the cursor bloom: a few rotating
+     angular lobes replace a clean disc, plus a per-cell grain so the
+     edge frays instead of drawing a crisp curve */
+  var LOBES = [
+    { freq: 2, amp: 0.24, phase: Math.random() * 6.283, speed:  0.0026 },
+    { freq: 3, amp: 0.17, phase: Math.random() * 6.283, speed: -0.0041 },
+    { freq: 5, amp: 0.11, phase: Math.random() * 6.283, speed:  0.0064 },
+    { freq: 7, amp: 0.07, phase: Math.random() * 6.283, speed: -0.0089 }
+  ];
+  var LOBE_MAX = 1;
+  for (var _li = 0; _li < LOBES.length; _li++) LOBE_MAX += LOBES[_li].amp;
+  var lobeT = 0;
+  var GRAIN_SEED = 8161;
+
+  function silhouette(theta){
+    var r = 1;
+    for (var i = 0; i < LOBES.length; i++){
+      var L = LOBES[i];
+      r += L.amp * Math.cos(L.freq * theta + L.phase + L.speed * lobeT);
+    }
+    return r;
+  }
+
+  /* ---- value noise, so faint cells cluster like a scanned screen ---- */
+  function hash(x, y, s){
+    var h = x * 374761393 + y * 668265263 + s * 1442695040;
+    h = (h ^ (h >> 13)) * 1274126177;
+    return ((h ^ (h >> 16)) >>> 0) / 4294967295;
+  }
+  function smooth(t){ return t * t * (3 - 2 * t); }
+  function vnoise(x, y, s){
+    var xi = Math.floor(x), yi = Math.floor(y);
+    var tx = smooth(x - xi), ty = smooth(y - yi);
+    var a = hash(xi, yi, s), b = hash(xi + 1, yi, s);
+    var c = hash(xi, yi + 1, s), d = hash(xi + 1, yi + 1, s);
+    return (a + (b - a) * tx) + ((c + (d - c) * tx) - (a + (b - a) * tx)) * ty;
+  }
+
+  function readInk(){
+    var v = getComputedStyle(document.documentElement).getPropertyValue('--ink-rgb').trim();
+    if (v) inkRGB = v;
+  }
+
+  /* the word floats as a denser cluster of the same dots, drawn from a
+     glyph mask rather than static DOM text; substituting KoPubWorld
+     Batang (not hosted on any CDN this artifact can load) with the
+     closest bold Korean serif on Google Fonts */
+  var REVEAL_TEXT = '향유';
+  var MASK_FONT_PX = 46;
+  var maskCanvas = document.createElement('canvas');
+  var maskCtx = maskCanvas.getContext('2d');
+  var maskData = null, maskW = 0, maskH = 0;
+
+  function renderMask(){
+    maskCtx.font = '800 ' + MASK_FONT_PX + 'px "Nanum Myeongjo", serif';
+    maskW = Math.ceil(maskCtx.measureText(REVEAL_TEXT).width) + 28;
+    maskH = Math.ceil(MASK_FONT_PX * 1.3);
+    maskCanvas.width = maskW;
+    maskCanvas.height = maskH;
+    maskCtx.font = '800 ' + MASK_FONT_PX + 'px "Nanum Myeongjo", serif';
+    maskCtx.fillStyle = '#000';
+    maskCtx.textAlign = 'center';
+    maskCtx.textBaseline = 'middle';
+    maskCtx.fillText(REVEAL_TEXT, maskW / 2, maskH / 2 + MASK_FONT_PX * 0.04);
+    maskData = maskCtx.getImageData(0, 0, maskW, maskH).data;
+  }
+  renderMask();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(renderMask);
+
+  function sampleMask(lx, ly){
+    var xi = lx | 0, yi = ly | 0;
+    if (xi < 0 || yi < 0 || xi >= maskW || yi >= maskH || !maskData) return 0;
+    return maskData[(yi * maskW + xi) * 4 + 3] / 255;
+  }
+
+  var floatT = 0, wordX = 0, wordY = 0, hoverLevel = 0;
+
+  function updateWordPos(){
+    var baseX = W * 0.80, baseY = H * 0.24;
+    var ampX = Math.min(55, W * 0.05), ampY = Math.min(34, H * 0.04);
+    var x = baseX + Math.sin(floatT * 0.00185) * ampX + Math.sin(floatT * 0.0041 + 1.7) * ampX * 0.45;
+    var y = baseY + Math.sin(floatT * 0.00151 + 0.6) * ampY + Math.sin(floatT * 0.0032 + 2.3) * ampY * 0.45;
+    var minX = Math.max(W * 0.60, maskW / 2 + 40), maxX = W - maskW / 2 - 20;
+    var minY = maskH / 2 + 60, maxY = H - maskH / 2 - 40;
+    wordX = Math.min(maxX, Math.max(minX, x));
+    wordY = Math.min(maxY, Math.max(minY, y));
+  }
+
+  /* click reveal: a small ruled notebook page assembles, line by line,
+     with the quote fading in above the first few rules */
+  var TITLE_LINE = '향유(享有)';
+  var TITLE_FONT = '700 17px "Nanum Myeongjo", serif';
+  var STATEMENT_LINES = [
+    '대상을 소유하는 것이 아니라, 그 대상과 관계 맺으며',
+    '그 안의 가치와 감각을 온전히 누리는 일'
+  ];
+  var QUESTIONS = [
+    '기록은 향유를 돕는가, 방해하는가?',
+    '아름다움은 이해하는 순간 더 깊어지는가, 아니면 설명하는 순간 훼손되는가?',
+    '바쁜 일상 속에서 어떤 순간만큼은 천천히 머물고 싶나요?'
+  ];
+  var QUESTION_LINE = QUESTIONS[0];   /* 향유를 누를 때마다 QUESTIONS 중 하나로 교체됨 */
+  var QUESTION_CHAR_MS = 42;
+  var QUOTE_FONT = '500 15px "Nanum Myeongjo", serif';
+  var TYPED_FONT = '700 15px "Nanum Myeongjo", serif';
+  var QUOTE_RULES = 8;
+  var quoteActive = false, quoteAlpha = 0, quoteTarget = 0, quoteT = 0;
+  var quoteRect = { x: 0, y: 0, w: 0, h: 0 };   /* 메모장 영역 - 떠다니는 글씨가 피해감 */
+
+  var answerInput = document.getElementById('answerInput');
+  var userAnswer = '', answerFocused = false, answerAutoFocused = false, answerRows = 1;
+
+  function resizeAnswerInput(){
+    answerInput.style.height = 'auto';
+    answerRows = Math.max(1, Math.round(answerInput.scrollHeight / 46));
+    answerInput.style.height = (answerRows * 46) + 'px';
+  }
+
+  /* a short synthesized "tock" per keystroke, like a typewriter key -
+     no audio file to load, just a filtered noise burst with a fast decay */
+  var audioCtx = null;
+  function playTypeSound(){
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!audioCtx) audioCtx = new AC();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    var now = audioCtx.currentTime;
+
+    /* sharp high click: the type-bar striking the ribbon */
+    var clickDur = 0.012;
+    var buf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * clickDur), audioCtx.sampleRate);
+    var data = buf.getChannelData(0);
+    for (var i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    var src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    var hp = audioCtx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 2600 + Math.random() * 700;
+    var clickGain = audioCtx.createGain();
+    clickGain.gain.setValueAtTime(0.55, now);
+    clickGain.gain.exponentialRampToValueAtTime(0.001, now + clickDur);
+    src.connect(hp); hp.connect(clickGain); clickGain.connect(audioCtx.destination);
+    src.start(now);
+    src.stop(now + clickDur);
+
+    /* low mechanical thunk: the carriage/lever body under the click */
+    var thunkDur = 0.05;
+    var osc = audioCtx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(190 + Math.random() * 40, now);
+    osc.frequency.exponentialRampToValueAtTime(90, now + thunkDur);
+    var thunkGain = audioCtx.createGain();
+    thunkGain.gain.setValueAtTime(0.32, now);
+    thunkGain.gain.exponentialRampToValueAtTime(0.001, now + thunkDur);
+    osc.connect(thunkGain); thunkGain.connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + thunkDur);
+  }
+
+  answerInput.addEventListener('input', function(){
+    userAnswer = answerInput.value;
+    resizeAnswerInput();
+    playTypeSound();
+  });
+  /* a real newline would desync it from the rules below it - Enter is
+     reserved for releasing the sentence (handled on keyup) */
+  answerInput.addEventListener('keydown', function(e){
+    if (e.key === 'Enter') e.preventDefault();
+  });
+  answerInput.addEventListener('focus', function(){ answerFocused = true; });
+  answerInput.addEventListener('blur', function(){ answerFocused = false; });
+
+  /* pressing Enter releases what you wrote into its own floating,
+     dot-built phrase, drifting the same way "향유" does */
+  function buildMask(text, fontPx, weight){
+    var mc = document.createElement('canvas');
+    var mctx = mc.getContext('2d');
+    mctx.font = weight + ' ' + fontPx + 'px "Nanum Myeongjo", serif';
+    var w = Math.ceil(mctx.measureText(text).width) + 28;
+    var h = Math.ceil(fontPx * 1.3);
+    mc.width = w; mc.height = h;
+    mctx.font = weight + ' ' + fontPx + 'px "Nanum Myeongjo", serif';
+    mctx.fillStyle = '#000';
+    mctx.textAlign = 'center';
+    mctx.textBaseline = 'middle';
+    mctx.fillText(text, w / 2, h / 2 + fontPx * 0.04);
+    return { data: mctx.getImageData(0, 0, w, h).data, w: w, h: h };
+  }
+
+  function sampleMaskGeneric(mask, lx, ly){
+    var xi = lx | 0, yi = ly | 0;
+    if (xi < 0 || yi < 0 || xi >= mask.w || yi >= mask.h) return 0;
+    return mask.data[(yi * mask.w + xi) * 4 + 3] / 255;
+  }
+
+  /* 화면 전체에 소용돌이는 딱 하나: 답변을 낼 때마다 그 문장이 기존 내용
+     뒤에 이어붙고, 그만큼 소용돌이가 커진다. 답변을 내지 않으면 그대로
+     머물러 있고(시간이 지나도 자라지 않음), 새 글자만 살짝 페이드인 한다 */
+  var spiralForm = null;
+  var archivedOrbs = [];   /* 다 자라 뭉쳐진 소용돌이들이 작은 원으로 떠다니는 목록 */
+  var CHAR_ARC = 14;   /* 글자 하나가 차지하는 나선 위 호(arc) 길이 */
+  var SPIRAL_STORAGE_KEY = 'halftoneSpiralText';
+  var ARCHIVE_STORAGE_KEY = 'halftoneArchivedTexts';
+  var COLLAPSE_MS = 1400;    /* 뭉쳐지는 애니메이션 시간 */
+  var ORB_SCALE = 0.16;      /* 뭉쳐진 뒤 크기 비율 */
+
+  function makeSpiralBase(){
+    var coils = 8.5;            /* 화면을 다 채웠을 때의 감김 수 */
+    var maxR = Math.min(W, H) * 0.44;
+    var R0 = 40;                /* 중심 바로 옆 시작 반지름 - 너무 작으면 글자가 중심 근처에서 확 튀며 겹침 */
+    return {
+      baseA: Math.random() * 6.283,
+      dir: Math.random() < 0.5 ? -1 : 1,
+      rot: (Math.random() < 0.5 ? -1 : 1) * (0.012 + Math.random() * 0.012),
+      R0: R0,
+      b: (maxR - R0) / (coils * 2 * Math.PI),   /* 반지름 = R0 + b * 각도 */
+      maxR: maxR,
+      size: 15                                   /* 입력 글씨와 같은 크기 */
+    };
+  }
+
+  var ORB_R = 34;                              /* 보관 원의 반지름 */
+  var ORB_STROKE = 'rgba(214,196,110,0.65)';
+  var ORB_FILL = 'rgba(255,252,235,0.55)';
+  var ORB_TEXT = 'rgba(190,168,80,0.95)';
+
+  function orbPositionFor(index){
+    var col = Math.floor(index / 6), row = index % 6;
+    return { x: 54 + col * 74, y: 110 + row * 84 };
+  }
+
+  function formatStamp(d){
+    return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + d.getHours() + ':' + (d.getMinutes() < 10 ? '0' : '') + d.getMinutes();
+  }
+
+  /* 새로고침해도 입력한 내용이 남아있도록 저장 - 초기화(암호) 눌렀을 때만 지워짐 */
+  function saveSpiralText(){
+    try {
+      if (spiralForm && spiralForm.seq) localStorage.setItem(SPIRAL_STORAGE_KEY, spiralForm.seq);
+      else localStorage.removeItem(SPIRAL_STORAGE_KEY);
+    } catch (e) {}
+  }
+  function saveArchivedTexts(){
+    try {
+      var arr = archivedOrbs.map(function(o){ return { seq: o.seq, time: o.time }; });
+      localStorage.setItem(ARCHIVE_STORAGE_KEY, JSON.stringify(arr));
+    } catch (e) {}
+  }
+  function clearSpiralText(){
+    try {
+      localStorage.removeItem(SPIRAL_STORAGE_KEY);
+      localStorage.removeItem(ARCHIVE_STORAGE_KEY);
+    } catch (e) {}
+  }
+  function restoreSpiralText(){
+    var past = performance.now() - 100000;
+    var savedArchive = null;
+    try { savedArchive = localStorage.getItem(ARCHIVE_STORAGE_KEY); } catch (e) {}
+    if (savedArchive){
+      try {
+        var items = JSON.parse(savedArchive);
+        for (var oi = 0; oi < items.length; oi++){
+          archivedOrbs.push({
+            seq: items[oi].seq,
+            time: items[oi].time || '',
+            pos: orbPositionFor(oi),
+            phase: Math.random() * 6.283
+          });
+        }
+      } catch (e) {}
+    }
+    var saved = null;
+    try { saved = localStorage.getItem(SPIRAL_STORAGE_KEY); } catch (e) {}
+    if (!saved) return;
+    spiralForm = makeSpiralBase();
+    spiralForm.seq = saved;
+    spiralForm.charBorn = [];
+    for (var i = 0; i < saved.length; i++) spiralForm.charBorn.push(past);   /* 이미 다 나타난 상태로 즉시 표시 */
+  }
+
+  /* 지금까지 쌓인 글자 수로 봤을 때 나선이 화면(maxR)을 거의 다 채웠는지 근사 계산 */
+  function estimateFinalRadius(f){
+    var S = f.seq.length * CHAR_ARC;
+    var theta = (-f.R0 + Math.sqrt(f.R0 * f.R0 + 2 * f.b * S)) / f.b;
+    return f.R0 + f.b * theta;
+  }
+
+  function spawnForm(text){
+    var t = text.trim();
+    if (!t) return;
+    if (!spiralForm){
+      spiralForm = makeSpiralBase();
+      spiralForm.seq = '';
+      spiralForm.charBorn = [];
+    }
+    if (spiralForm.collapsing) return;   /* 뭉쳐지는 중엔 새 글자를 받지 않음 */
+    var now = performance.now();
+    var sep = spiralForm.seq ? ' ' : '';
+    var startIdx = spiralForm.charBorn.length;
+    spiralForm.seq += sep + t;                     /* 이전 답변 뒤에 이어붙임 */
+    /* 타이핑처럼 한 글자씩 순서대로 나타나도록 등장 시각을 살짝씩 늦춰 예약 */
+    var TYPE_MS = 55;
+    for (var i = startIdx; i < spiralForm.seq.length; i++) spiralForm.charBorn.push(now + (i - startIdx) * TYPE_MS);
+
+    /* 화면을 거의 다 채울 만큼 쌓였으면: 작게 뭉쳐서 왼쪽으로 보내고,
+       다음 답변부터는 새 소용돌이가 다시 0부터 시작됨 */
+    if (estimateFinalRadius(spiralForm) >= spiralForm.maxR * 0.94){
+      spiralForm.collapsing = true;
+      spiralForm.collapseStart = now;
+      spiralForm.collapseTarget = orbPositionFor(archivedOrbs.length);
+    } else {
+      /* 아직 다 차지 않았어도, 쌓일수록 나선 간격을 조금씩 좁혀 중심 쪽으로 촘촘해지게 함 */
+      if (spiralForm.bBase == null) spiralForm.bBase = spiralForm.b;
+      var packed = Math.min(1, spiralForm.seq.length / 90);
+      spiralForm.b = spiralForm.bBase * (1 - packed * 0.35);
+    }
+    saveSpiralText();
+  }
+
+  function drawForms(){
+    var now = performance.now();
+
+    /* 뭉치는 애니메이션이 끝났으면 작은 원으로 확정하고, 새 소용돌이를 위해 자리 비움 */
+    if (spiralForm && spiralForm.collapsing && now - spiralForm.collapseStart >= COLLAPSE_MS){
+      archivedOrbs.push({
+        seq: spiralForm.seq,
+        time: formatStamp(new Date()),
+        pos: spiralForm.collapseTarget,
+        phase: Math.random() * 6.283
+      });
+      spiralForm = null;
+      saveSpiralText();
+      saveArchivedTexts();
+    }
+
+    drawArchivedOrbs(now);
+
+    var f = spiralForm;
+    if (!f) return;
+    var tt = (now - (f.charBorn[0] || now)) * 0.001;   /* 전체가 계속 천천히 도는 용도 */
+
+    var collapseEase = 0, collX = W / 2, collY = H / 2, collScale = 1;
+    if (f.collapsing){
+      collapseEase = Math.min(1, (now - f.collapseStart) / COLLAPSE_MS);
+      collapseEase = 1 - Math.pow(1 - collapseEase, 3);
+      collScale = 1 - collapseEase * (1 - ORB_SCALE);
+      collX = W / 2 + (f.collapseTarget.x - W / 2) * collapseEase;
+      collY = H / 2 + (f.collapseTarget.y - H / 2) * collapseEase;
+    }
+
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgb(' + inkRGB + ')';
+    ctx.font = '700 ' + Math.max(5, f.size * collScale) + 'px "Nanum Myeongjo", serif';
+    var theta = 0;
+    var MAX_VISIBLE = 260;   /* 나선 간격이 좁아져도 한 프레임에 그릴 글자 수를 제한해 렉 방지 */
+    for (var ci = 0; ci < f.seq.length; ci++){
+      if (ci >= MAX_VISIBLE) break;
+      var r = f.R0 + f.b * theta;
+      if (r > f.maxR) break;            /* 화면 밖으로 나가지 않게 안전 캡 */
+      var dtheta = CHAR_ARC / r;         /* r이 항상 R0 이상이라 중심 근처에서 각도가 튀지 않음 */
+      /* 나선을 따라 흐르는 잔물결 - 소용돌이가 가만히 있지 않고 살아있는 듯 움직임 */
+      var ripple = f.collapsing ? 0 : Math.sin(tt * 0.7 + ci * 0.28) * 3;
+      var ripple2 = f.collapsing ? 0 : Math.sin(tt * 0.7 + (ci + 1) * 0.28) * 3;
+      var ang = f.baseA + theta * f.dir + tt * f.rot;
+      var ang2 = f.baseA + (theta + dtheta) * f.dir + tt * f.rot;
+      var r2 = f.R0 + f.b * (theta + dtheta) + ripple2;
+      r += ripple;
+      var x = W / 2 + Math.cos(ang) * r, y = H / 2 + Math.sin(ang) * r;
+      var x2 = W / 2 + Math.cos(ang2) * r2, y2 = H / 2 + Math.sin(ang2) * r2;
+      var ch = f.seq.charAt(ci);
+      theta += dtheta;
+      if (ch === ' ') continue;
+
+      if (f.collapsing){
+        x = collX + (x - W / 2) * collScale; y = collY + (y - H / 2) * collScale;
+        x2 = collX + (x2 - W / 2) * collScale; y2 = collY + (y2 - H / 2) * collScale;
+      }
+
+      var appear = (now - f.charBorn[ci]) / 260; if (appear > 1) appear = 1; if (appear < 0) appear = 0;
+
+      /* 커서가 가까이 오면 글자가 옆으로 비켜서는 회피 모션 (뭉쳐지는 동안은 끔) */
+      if (!f.collapsing){
+        var cdx = x - mx, cdy = y - my;
+        var cdist = Math.sqrt(cdx * cdx + cdy * cdy);
+        if (cdist < 76 && cdist > 0.01){
+          var dodge = 1 - cdist / 76; dodge *= dodge;
+          var nx = cdx / cdist, ny = cdy / cdist;
+          x += nx * dodge * 30; y += ny * dodge * 30;
+          x2 += nx * dodge * 30; y2 += ny * dodge * 30;
+        }
+      }
+      var ga = 0.85 * appear;
+      /* 메모장이 열려 있으면 그 영역엔 글씨가 아예 들어오지 않음 (가장자리 40px 페더) */
+      if (quoteAlpha > 0.01){
+        var ex = quoteAlpha * 3; if (ex > 1) ex = 1;
+        var ddx = Math.max(quoteRect.x - x, x - (quoteRect.x + quoteRect.w), 0);
+        var ddy = Math.max(quoteRect.y - y, y - (quoteRect.y + quoteRect.h), 0);
+        var outside = Math.sqrt(ddx * ddx + ddy * ddy);
+        var mask = outside >= 40 ? 1 : outside / 40;
+        ga *= 1 - ex * (1 - mask);
+      }
+      if (ga >= 0.02){
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(Math.atan2(y2 - y, x2 - x));
+        ctx.globalAlpha = ga;
+        ctx.fillText(ch, 0, 0);
+        ctx.restore();
+      }
+    }
+    ctx.restore();
+  }
+
+  /* 뭉쳐져서 왼쪽에 작게 떠다니는 지난 소용돌이들 - 내용은 원 안에 날짜/시간으로만 표시 */
+  function drawArchivedOrbs(now){
+    if (!archivedOrbs.length) return;
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '400 12px "Helvetica Neue",Helvetica,Arial,sans-serif';
+    for (var oi = 0; oi < archivedOrbs.length; oi++){
+      var o = archivedOrbs[oi];
+      var tt = now * 0.0006 + o.phase;
+      var bobX = Math.sin(tt) * 3, bobY = Math.cos(tt * 0.8) * 3;
+      var cx = o.pos.x + bobX, cy = o.pos.y + bobY;
+      ctx.beginPath();
+      ctx.arc(cx, cy, ORB_R, 0, 6.28318);
+      ctx.fillStyle = ORB_FILL;
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = ORB_STROKE;
+      ctx.stroke();
+      ctx.fillStyle = ORB_TEXT;
+      ctx.fillText(o.time || '', cx, cy);
+    }
+    ctx.restore();
+  }
+
+  /* release on keyup, not keydown: by keyup any Hangul composition for
+     that keystroke has fully settled, so clearing .value here can't
+     race with it (that race was corrupting the next syllable and,
+     worse, letting held-Enter auto-repeat spawn duplicate copies) */
+  answerInput.addEventListener('keyup', function(e){
+    if (e.key !== 'Enter') return;
+    var txt = userAnswer.trim();
+    userAnswer = '';
+    answerInput.value = '';
+    resizeAnswerInput();
+    if (txt) {
+      playTypeSound();
+      spawnForm(txt);
+      quoteTarget = 0;          /* 텍스트가 나오면 적는 부분(룰 노트)은 사라짐 */
+      answerInput.blur();
+      hintText.textContent = HINT_DEFAULT;
+    }
+  });
+
+  function clamp01(v){ return v < 0 ? 0 : (v > 1 ? 1 : v); }
+
+  /* measurement only - the real glyphs are drawn by the textarea itself;
+     this just sizes the highlight bar to match what's actually typed */
+  /* char-level wrap so a long spaceless answer flows down line by line
+     (matching the textarea's word-break:break-all) instead of overflowing */
+  /* 우선 띄어쓰기(단어) 단위로 자연스럽게 줄바꿈하고, 띄어쓰기가 없는 단어
+     하나가 라인 폭보다 길 때만 그 단어를 글자 단위로 쪼갬 */
+  function wrapWords(text, maxWidth){
+    var words = text.split(' ');
+    var lines = [];
+    var cur = '';
+    for (var i = 0; i < words.length; i++){
+      var word = words[i];
+      var test = cur ? cur + ' ' + word : word;
+      if (ctx.measureText(test).width <= maxWidth){
+        cur = test;
+        continue;
+      }
+      if (cur){ lines.push(cur); cur = ''; }
+      if (ctx.measureText(word).width <= maxWidth){
+        cur = word;
+      } else {
+        var piece = '';
+        for (var c = 0; c < word.length; c++){
+          var ch = word.charAt(c);
+          if (piece && ctx.measureText(piece + ch).width > maxWidth){
+            lines.push(piece);
+            piece = ch;
+          } else {
+            piece += ch;
+          }
+        }
+        cur = piece;
+      }
+    }
+    if (cur) lines.push(cur);
+    if (!lines.length) lines.push('');
+    return lines;
+  }
+
+  function drawQuotePanel(a, t){
+    var blockW = Math.min(W * 0.56, 560) * (2 / 3);
+    var left = Math.max(16, Math.min(W - blockW - 16, wordX - blockW / 2));
+    var gap = 46;
+
+    ctx.save();
+    var lines = STATEMENT_LINES;
+    var titleSlots = 1;
+    var questionIndex = titleSlots + lines.length;
+    var questionStart = (questionIndex - 1) * 220 + 260 + 450 + 1000;
+
+    /* 질문 길이가 제각각이라, 라인 폭(blockW)에 맞춰 필요한 만큼 줄바꿈해서
+       룰 라인 밖으로 튀어나오지 않게 함 */
+    ctx.font = QUOTE_FONT;
+    var questionLines = wrapWords(QUESTION_LINE, blockW);
+    var qOffsets = [];
+    var qAcc = 0;
+    for (var qi = 0; qi < questionLines.length; qi++){ qOffsets.push(qAcc); qAcc += questionLines[qi].length; }
+    var answerIndex = questionIndex + questionLines.length;
+
+    var totalRules = Math.max(QUOTE_RULES, answerIndex + answerRows + 1);
+
+    var startY = wordY + maskH / 2 + gap;
+    var totalH = (totalRules - 1) * gap;
+    if (startY + totalH > H - 30) startY = H - 30 - totalH;
+
+    quoteRect.x = left - 44;
+    quoteRect.y = startY - 62;
+    quoteRect.w = blockW + 88;
+    quoteRect.h = totalH + 104;
+
+    for (var i = 0; i < totalRules; i++){
+      var delay = i * 220;
+      var lp = clamp01((t - delay) / 500);
+      if (lp <= 0) continue;
+      var eased = 1 - Math.pow(1 - lp, 3);
+      var y = startY + i * gap;
+      var w = blockW * eased;
+      var rx = left + (blockW - w) / 2;
+      ctx.globalAlpha = a;
+      ctx.fillStyle = 'rgba(' + inkRGB + ',0.88)';
+      ctx.fillRect(rx, y, w, 1.3);
+
+      if (i === 0){
+        var tp0 = clamp01((t - delay - 260) / 450);
+        if (tp0 > 0){
+          ctx.globalAlpha = a * tp0;
+          ctx.fillStyle = 'rgba(' + inkRGB + ',0.92)';
+          ctx.font = TITLE_FONT;
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'alphabetic';
+          ctx.fillText(TITLE_LINE, left, y - 9);
+        }
+      } else if (i - titleSlots < lines.length){
+        var tp = clamp01((t - delay - 260) / 450);
+        if (tp > 0){
+          ctx.globalAlpha = a * tp;
+          ctx.fillStyle = 'rgba(' + inkRGB + ',0.92)';
+          ctx.font = QUOTE_FONT;
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'alphabetic';
+          ctx.fillText(lines[i - titleSlots], left, y - 9);
+        }
+      } else if (i >= questionIndex && i < answerIndex && t >= questionStart){
+        var ri = i - questionIndex;
+        var offset = qOffsets[ri];
+        var lineText = questionLines[ri];
+        var totalChars = Math.min(QUESTION_LINE.length, Math.floor((t - questionStart) / QUESTION_CHAR_MS));
+        var localChars = Math.max(0, Math.min(lineText.length, totalChars - offset));
+        if (localChars > 0){
+          var shown = lineText.slice(0, localChars);
+          ctx.globalAlpha = a;
+          ctx.fillStyle = 'rgba(' + inkRGB + ',0.92)';
+          ctx.font = QUOTE_FONT;
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'alphabetic';
+          ctx.fillText(shown, left, y - 9);
+          var isActiveRow = totalChars >= offset && totalChars < offset + lineText.length;
+          if (isActiveRow && Math.floor(t / 500) % 2 === 0){
+            var caretX = left + ctx.measureText(shown).width + 2;
+            ctx.fillRect(caretX, y - 22, 1.3, 16);
+          }
+        }
+      } else if (i >= answerIndex && i <= answerIndex + answerRows - 1){
+        var answerReadyT = questionStart + QUESTION_LINE.length * QUESTION_CHAR_MS + 300;
+        if (t >= answerReadyT){
+          if (!answerAutoFocused){
+            answerAutoFocused = true;
+            answerInput.style.left = left + 'px';
+            answerInput.style.width = blockW + 'px';
+            resizeAnswerInput();
+            answerInput.focus();
+          }
+          if (i === answerIndex) answerInput.style.top = (y - 46) + 'px';
+
+          ctx.font = TYPED_FONT;
+          var aLine = wrapWords(userAnswer, blockW)[i - answerIndex];
+          if (aLine){
+            var lw = ctx.measureText(aLine).width;
+            if (lw > 0){
+              ctx.globalAlpha = a;
+              ctx.fillStyle = 'rgba(0,0,0,0.09)';
+              ctx.fillRect(left - 2, y - 34, lw + 4, 22);
+            }
+          }
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  function plate(){
+    var seed = (Math.random() * 1000) | 0;
+
+    bctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    bctx.clearRect(0, 0, W, H);
+
+    for (var r = 0; r < rows; r++){
+      for (var c = 0; c < cols; c++){
+        var i = r * cols + c;
+        var jx = hash(c, r, seed + 1), jy = hash(c, r, seed + 2);
+        var x = c * PITCH + PITCH * 0.5 + (jx - 0.5) * PITCH * 0.55;
+        var y = r * PITCH + PITCH * 0.5 + (jy - 0.5) * PITCH * 0.55;
+
+        /* two noise octaves so faint dots clump into irregular drifts
+           rather than an even, mechanical scatter */
+        var cloud = vnoise(c * 0.05, r * 0.05, seed) * 0.62
+                  + vnoise(c * 0.16, r * 0.16, seed + 7) * 0.38;
+        cloud = Math.max(0, cloud - 0.22);
+
+        var g = hash(c, r, seed + 3);
+        var a = Math.pow(g, 3.4) * (0.14 + 0.62 * cloud);
+        if (hash(c, r, seed + 4) > 0.9975) a += 0.30;          /* rare stray speck */
+        a = Math.min(0.34, a);
+
+        var rad = 0.26 + hash(c, r, seed + 5) * 0.28 + cloud * 0.22;
+
+        px[i] = x; py[i] = y; pr[i] = rad; pa[i] = a;
+      }
+    }
+    pa0.set(pa);
+    pr0.set(pr);
+    paintBase();
+    deposits = 0;
+    measure();
+  }
+
+  function paintBase(){
+    bctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    bctx.clearRect(0, 0, W, H);
+    var LV = 10, buckets = [];
+    for (var k = 0; k < LV; k++) buckets.push([]);
+    for (var i = 0; i < n; i++){
+      var a = pa[i];
+      if (a < 0.012) continue;
+      var k2 = Math.min(LV - 1, (a / 0.65 * LV) | 0);
+      buckets[k2].push(i);
+    }
+    for (var k3 = 0; k3 < LV; k3++){
+      var list = buckets[k3];
+      if (!list.length) continue;
+      bctx.fillStyle = 'rgba(' + inkRGB + ',' + ((k3 + 0.5) / LV * 0.65).toFixed(3) + ')';
+      bctx.beginPath();
+      for (var j = 0; j < list.length; j++){
+        var id = list[j];
+        bctx.moveTo(px[id] + pr[id], py[id]);
+        bctx.arc(px[id], py[id], pr[id], 0, 6.28318);
+      }
+      bctx.fill();
+    }
+  }
+
+  function measure(){
+    var lit = 0;
+    for (var i = 0; i < n; i++) if (pa[i] > 0.18) lit++;
+    densityTxt = n ? (lit / n * 100).toFixed(1) + ' %' : '—';
+  }
+
+  function resize(){
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = base.width = trail.width = Math.round(W * DPR);
+    cv.height = base.height = trail.height = Math.round(H * DPR);
+    cols = Math.ceil(W / PITCH) + 1;
+    rows = Math.ceil(H / PITCH) + 1;
+    n = cols * rows;
+    px = new Float32Array(n); py = new Float32Array(n);
+    pr = new Float32Array(n); pa = new Float32Array(n);
+    pa0 = new Float32Array(n); pr0 = new Float32Array(n);
+    field = new Float32Array(n);
+    fadeAcc = 0;
+    readInk();
+    plate();
+    seedIntro();
+  }
+
+  /* ---- pointer state ---- */
+  var mx = -1e4, my = -1e4, lx = -1e4, ly = -1e4, has = false, down = false;
+  var hairX = 0, hairY = 0, hairLen = 300, speed = 0;
+  var lineThickness = 1.4, trailFadeK = 0.8208;
+
+  function seedIntro(){
+    if (reduced) return;
+    var cx = W / 2, cy = H / 2;
+    for (var i = 0; i < n; i++){
+      var dx = px[i] - cx, dy = py[i] - cy;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      var effR = radius * 1.7 * silhouette(Math.atan2(dy, dx));
+      var d = dist / effR;
+      if (d < 1) field[i] = Math.pow(1 - d, 1.6) * 0.95;
+    }
+    hairX = cx; hairY = cy;
+  }
+
+  function stamp(ax, ay, bx, by, amp){
+    var R = radius, RM = R * LOBE_MAX, RM2 = RM * RM;
+    var minx = Math.min(ax, bx) - RM, maxx = Math.max(ax, bx) + RM;
+    var miny = Math.min(ay, by) - RM, maxy = Math.max(ay, by) + RM;
+    var c0 = Math.max(0, (minx / PITCH) | 0), c1 = Math.min(cols - 1, (maxx / PITCH) | 0);
+    var r0 = Math.max(0, (miny / PITCH) | 0), r1 = Math.min(rows - 1, (maxy / PITCH) | 0);
+    var vx = bx - ax, vy = by - ay, vl = vx * vx + vy * vy;
+
+    for (var r = r0; r <= r1; r++){
+      for (var c = c0; c <= c1; c++){
+        var i = r * cols + c;
+        var dx = px[i] - ax, dy = py[i] - ay;
+        if (vl > 0){
+          var t = (dx * vx + dy * vy) / vl;
+          t = t < 0 ? 0 : (t > 1 ? 1 : t);
+          dx -= vx * t; dy -= vy * t;
+        }
+        var d2 = dx * dx + dy * dy;
+        if (d2 > RM2) continue;
+        var effR = R * silhouette(Math.atan2(dy, dx));
+        var f = 1 - Math.sqrt(d2) / effR;
+        if (f <= 0) continue;
+        var grain = 0.5 + 0.5 * hash(c, r, GRAIN_SEED);
+        var v = field[i] + Math.pow(f, 1.7) * amp * grain;
+        field[i] = v > 1.25 ? 1.25 : v;
+      }
+    }
+  }
+
+  function deposit(ax, ay, bx, by){
+    var R = radius * 0.42, RM = R * LOBE_MAX, RM2 = RM * RM;
+    var minx = Math.min(ax, bx) - RM, maxx = Math.max(ax, bx) + RM;
+    var miny = Math.min(ay, by) - RM, maxy = Math.max(ay, by) + RM;
+    var c0 = Math.max(0, (minx / PITCH) | 0), c1 = Math.min(cols - 1, (maxx / PITCH) | 0);
+    var r0 = Math.max(0, (miny / PITCH) | 0), r1 = Math.min(rows - 1, (maxy / PITCH) | 0);
+    var vx = bx - ax, vy = by - ay, vl = vx * vx + vy * vy;
+
+    bctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    for (var r = r0; r <= r1; r++){
+      for (var c = c0; c <= c1; c++){
+        var i = r * cols + c;
+        var dx = px[i] - ax, dy = py[i] - ay;
+        if (vl > 0){
+          var t = (dx * vx + dy * vy) / vl;
+          t = t < 0 ? 0 : (t > 1 ? 1 : t);
+          dx -= vx * t; dy -= vy * t;
+        }
+        var d2 = dx * dx + dy * dy;
+        if (d2 > RM2) continue;
+        var effR = R * silhouette(Math.atan2(dy, dx));
+        var fr = 1 - Math.sqrt(d2) / effR;
+        if (fr <= 0) continue;
+        var grain = 0.5 + 0.5 * hash(c, r, GRAIN_SEED + 1);
+        var f = Math.pow(fr, 2.0) * grain;
+        var before = pa[i];
+        pa[i] = Math.min(0.72, pa[i] + f * 0.20);
+        pr[i] = Math.min(2.4, pr[i] + f * 0.22);
+        if (pa[i] - before > 0.001){
+          if (before < 0.18 && pa[i] >= 0.18) deposits++;
+          bctx.fillStyle = 'rgba(' + inkRGB + ',' + pa[i].toFixed(3) + ')';
+          bctx.beginPath();
+          bctx.arc(px[i], py[i], pr[i], 0, 6.28318);
+          bctx.fill();
+        }
+      }
+    }
+  }
+
+  /* ---- render ---- */
+  var LEVELS = 9;
+  var lists = [];
+  for (var q = 0; q < LEVELS; q++) lists.push([]);
+  var last = performance.now(), acc = 0;
+
+  function frame(now){
+    var dt = Math.min(64, now - last) / 16.6667;
+    last = now;
+    lobeT += dt;
+
+    if (has){
+      var amp = (down ? 0.55 : 0.42) * dt;
+      stamp(lx, ly, mx, my, amp);
+      if (down) deposit(lx, ly, mx, my);
+      var sdx = mx - lx, sdy = my - ly;
+      speed += (Math.sqrt(sdx * sdx + sdy * sdy) - speed) * 0.2;
+      lx = mx; ly = my;
+    }
+
+    if (quoteTarget !== 1) floatT += dt;
+    updateWordPos();
+    var hdx = mx - wordX, hdy = my - wordY;
+    var hoverDist = Math.sqrt(hdx * hdx + hdy * hdy);
+    var hoverTarget = (quoteTarget === 1) ? 1 : ((has && hoverDist < Math.max(maskW, maskH) * 0.62) ? 1 : 0);
+    hoverLevel += (hoverTarget - hoverLevel) * Math.min(1, 0.05 * dt);
+
+    var wordAmp = 0.28 + 0.62 * hoverLevel;
+    var wox = wordX - maskW / 2, woy = wordY - maskH / 2;
+    var wc0 = Math.max(0, (wox / PITCH) | 0), wc1 = Math.min(cols - 1, ((wox + maskW) / PITCH) | 0);
+    var wr0 = Math.max(0, (woy / PITCH) | 0), wr1 = Math.min(rows - 1, ((woy + maskH) / PITCH) | 0);
+    for (var wr = wr0; wr <= wr1; wr++){
+      for (var wc = wc0; wc <= wc1; wc++){
+        var wi = wr * cols + wc;
+        var wa = sampleMask(px[wi] - wox, py[wi] - woy);
+        if (wa <= 0.06) continue;
+        var wv = field[wi] + wa * wordAmp * 0.095 * dt;
+        field[wi] = wv > 1.25 ? 1.25 : wv;
+      }
+    }
+
+    var decay = Math.pow(0.905, dt);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.drawImage(base, 0, 0);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    for (var k = 0; k < LEVELS; k++) lists[k].length = 0;
+
+    for (var i = 0; i < n; i++){
+      var v = field[i];
+      if (v < 0.014){ field[i] = 0; continue; }
+      field[i] = v * decay;
+      var t = v > 1 ? 1 : v;
+      var a = pa[i] + t * 0.80;
+      if (a > 0.94) a = 0.94;
+      var k2 = (a / 0.95 * LEVELS) | 0;
+      if (k2 > LEVELS - 1) k2 = LEVELS - 1;
+      lists[k2].push(i, t);
+    }
+
+    for (var k3 = 0; k3 < LEVELS; k3++){
+      var list = lists[k3];
+      if (!list.length) continue;
+      ctx.fillStyle = 'rgba(' + inkRGB + ',' + ((k3 + 0.75) / LEVELS * 0.95).toFixed(3) + ')';
+      ctx.beginPath();
+      for (var j = 0; j < list.length; j += 2){
+        var id = list[j], tt = list[j + 1];
+        var rad = pr[id] + tt * 1.85;
+        ctx.moveTo(px[id] + rad, py[id]);
+        ctx.arc(px[id], py[id], rad, 0, 6.28318);
+      }
+      ctx.fill();
+    }
+
+    /* hairline rule, trailing the pointer, leaving a fading afterimage below it -
+       both hide while the ruled note is open, so they don't sit over the text,
+       and resume already tracking the live cursor once it closes */
+    if (hairX || hairY){
+      var ease = reduced ? 1 : 0.14;
+      if (has){
+        hairX += (mx - hairX) * ease;
+        hairY += (my - hairY) * ease;
+      }
+      hairLen += ((286 + Math.min(90, speed * 2.4)) - hairLen) * 0.1;
+
+      tctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      tctx.globalCompositeOperation = 'destination-out';
+      tctx.fillStyle = 'rgba(0,0,0,' + (1 - Math.pow(trailFadeK, dt)).toFixed(3) + ')';
+      tctx.fillRect(0, 0, W, H);
+      tctx.globalCompositeOperation = 'source-over';
+
+      if (quoteTarget !== 1){
+        var half = hairLen / 2;
+        tctx.fillStyle = 'rgba(' + inkRGB + ',0.92)';
+        tctx.fillRect(Math.round(hairX - half), hairY - lineThickness / 2, Math.round(hairLen), lineThickness);
+
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.drawImage(trail, 0, 0);
+        ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      }
+    }
+
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    drawForms(dt);
+
+    quoteAlpha += (quoteTarget - quoteAlpha) * Math.min(1, 0.05 * dt);
+    if (quoteTarget === 1) quoteT += dt * 16.6667;
+    if (quoteAlpha > 0.0015){
+      drawQuotePanel(quoteAlpha, quoteT);
+    } else if (quoteActive){
+      quoteActive = false;
+      answerInput.style.width = '0px';
+      answerInput.style.height = '0px';
+      answerInput.style.top = '-999px';
+    }
+
+    fadeAcc += dt * 16.6667;
+    if (fadeAcc >= 180){
+      var fsteps = Math.max(1, Math.round(fadeAcc / 180));
+      fadeAcc = 0;
+      var fk = Math.pow(0.93, fsteps);
+      var fchanged = false;
+      for (var fi = 0; fi < n; fi++){
+        var exA = pa[fi] - pa0[fi];
+        if (exA > 0.0015){ pa[fi] = pa0[fi] + exA * fk; fchanged = true; }
+        else if (exA !== 0){ pa[fi] = pa0[fi]; }
+        var exR = pr[fi] - pr0[fi];
+        if (exR > 0.002){ pr[fi] = pr0[fi] + exR * fk; fchanged = true; }
+        else if (exR !== 0){ pr[fi] = pr0[fi]; }
+      }
+      if (fchanged) paintBase();
+    }
+
+    acc += dt;
+    if (acc > 20){ acc = 0; measure(); }
+    requestAnimationFrame(frame);
+  }
+
+  /* ---- events ---- */
+  var hintText = document.getElementById('hintText');
+  var HINT_DEFAULT = '숨어있는 키워드를 발견해 보세요.';
+  var HINT_ON_WORD = '생각을 입력해 보세요.';
+
+  window.addEventListener('click', function(e){
+    if (e.target === answerInput) return;
+    var cdx = e.clientX - wordX, cdy = e.clientY - wordY;
+    var onWord = Math.sqrt(cdx * cdx + cdy * cdy) < Math.max(maskW, maskH) * 0.65;
+    if (onWord){
+      QUESTION_LINE = QUESTIONS[(Math.random() * QUESTIONS.length) | 0];
+      quoteActive = true; quoteTarget = 1; quoteT = 0;
+      userAnswer = ''; answerInput.value = ''; answerAutoFocused = false; answerRows = 1;
+      answerInput.style.height = '46px';
+      answerInput.blur();
+      hintText.textContent = HINT_ON_WORD;
+    } else if (quoteActive){
+      quoteTarget = 0;
+      answerInput.blur();
+      hintText.textContent = HINT_DEFAULT;
+    }
+  });
+
+  window.addEventListener('pointermove', function(e){
+    if (!has){ lx = e.clientX; ly = e.clientY; hairX = e.clientX; hairY = e.clientY; has = true; }
+    mx = e.clientX; my = e.clientY;
+  }, {passive: true});
+
+  window.addEventListener('pointerdown', function(e){
+    down = true; mx = e.clientX; my = e.clientY;
+    if (!has){ lx = mx; ly = my; hairX = mx; hairY = my; has = true; }
+  });
+  window.addEventListener('pointerup', function(){ down = false; });
+  window.addEventListener('pointercancel', function(){ down = false; });
+  window.addEventListener('pointerleave', function(){ down = false; });
+
+  window.addEventListener('keydown', function(e){
+    if (document.activeElement === answerInput) return;
+    var k = e.key.toLowerCase();
+    if (e.key === '[' ) radius = Math.max(60, radius - 20);
+    else if (e.key === ']') radius = Math.min(340, radius + 20);
+    else if (k === 'r'){ doReset(); }
+    else return;
+  });
+
+  var resetBtn = document.getElementById('resetBtn');
+  resetBtn.addEventListener('pointerdown', function(e){ e.stopPropagation(); });
+
+  /* 새로고침(초기화) 버튼도 암호(3038)를 맞혀야 동작함 */
+  var RESET_PASSCODE = '3038';
+  var pwOverlay = document.getElementById('pwOverlay');
+  var pwInput = document.getElementById('pwInput');
+  var pwErr = document.getElementById('pwErr');
+  pwOverlay.addEventListener('pointerdown', function(e){ e.stopPropagation(); });
+
+  function openPasswordGate(){
+    pwErr.hidden = true;
+    pwInput.value = '';
+    pwOverlay.hidden = false;
+    setTimeout(function(){ pwInput.focus(); }, 0);
+  }
+  function closePasswordGate(){ pwOverlay.hidden = true; }
+
+  function doReset(){
+    plate(); seedIntro(); spiralForm = null; archivedOrbs.length = 0;
+    clearSpiralText();
+    /* 가운데 입력 노트(질문/답변 창)도 함께 지움 */
+    quoteActive = false; quoteTarget = 0; quoteT = 0;
+    userAnswer = ''; answerInput.value = ''; answerAutoFocused = false; answerRows = 1;
+    answerInput.style.width = '0px'; answerInput.style.height = '0px'; answerInput.style.top = '-999px';
+    answerInput.blur();
+    hintText.textContent = HINT_DEFAULT;
+  }
+
+  resetBtn.addEventListener('click', function(e){
+    e.stopPropagation();
+    openPasswordGate();
+  });
+  pwInput.addEventListener('keydown', function(e){
+    if (e.key === 'Enter'){
+      if (pwInput.value === RESET_PASSCODE){
+        closePasswordGate();
+        doReset();
+      } else {
+        pwErr.hidden = false;
+        pwInput.value = '';
+      }
+    } else if (e.key === 'Escape'){
+      e.stopPropagation();
+      closePasswordGate();
+    }
+  });
+  pwOverlay.addEventListener('click', function(e){ if (e.target === pwOverlay) closePasswordGate(); });
+
+  var rt;
+  window.addEventListener('resize', function(){
+    clearTimeout(rt);
+    rt = setTimeout(resize, 140);
+  });
+
+  resize();
+  restoreSpiralText();
+  requestAnimationFrame(function(t){ last = t; frame(t); });
+})();
+</script>
