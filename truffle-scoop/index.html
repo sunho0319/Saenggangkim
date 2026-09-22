@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Truffle Scoop — 기린하우스</title>
+  <meta name="description" content="10월 10일 토요일, 청주 운천동 기린하우스에서 열리는 Truffle Scoop 참가 신청. 트러플 아이스크림, 화이트 와인, 핑거푸드, 하우스 음악.">
+  <meta property="og:title" content="Truffle Scoop">
+  <meta property="og:description" content="10월 10일 토요일 오후 5시–9시 · 기린하우스 (운천동 1575)">
+  <meta property="og:image" content="assets/bg.jpg">
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="hero">
+  <div class="hero__inner">
+    <h1 class="hero__title"><img src="assets/title.png" alt="Truffle Scoop" width="1200" height="241"></h1>
+    <img class="hero__figures" src="assets/figures.png" alt="와인잔을 들고 춤추고 쉬고 있는 다섯 사람의 스케치" width="1300" height="660">
+
+    <div class="hero__copy">
+      <p>‘향유’는 우리 주변의 작은 즐거움을 발견하고 누리는 일입니다. 맛있는 음식을 먹고, 가볍게 술을 곁들이고, 좋은 음악을 들으며 사람들과 대화를 나누는 것처럼요. 청주 운천동 조용한 골목에 위치한 기린하우스에서 노을이 지는 5시부터 감도 높은 조명 아래 즐거운 밤을 만드는 시간을 마련합니다. 기린하우스의 시그니처인 트러플 아이스크림과 화이트 와인의 페어링 그리고 풍미를 더해줄 핑거푸드와 하우스 음악 아래, 함께 먹고 마시고 이야기를 나누며 각자의 방식으로 시간을 향유해보세요.</p>
+      <p>처음 기린하우스를 방문하는 분도, 혼자 발걸음을 옮기는 분도, 친구와 함께 오는 분도 모두 기린하우스에 모인 사람이라면 누구나 이 경험의 일부이자 주인공입니다. 조금의 낯가림과 어색함은 공간을 채우는 음악이 대신 메워줄 것입니다. 잔을 들고 공간을 천천히 둘러보거나, 곳곳에 숨어 있는 이야기와 오브제를 발견해보세요.</p>
+      <p>감도 높은 공간에서 청주의 다양한 분들이 만나 서로의 취향과 이야기를 나누는 시간이 되기를 바랍니다.</p>
+    </div>
+  </div>
+</header>
+
+<section class="info" aria-label="행사 정보">
+  <dl class="info__list">
+    <div class="info__row">
+      <dt>일정</dt>
+      <dd>10월 10일 토요일, 오후 5시-오후 9시</dd>
+    </div>
+    <div class="info__row">
+      <dt>장소</dt>
+      <dd>기린하우스 (운천동 1575)</dd>
+    </div>
+    <div class="info__row">
+      <dt>구성</dt>
+      <dd>17:00-21:00 Exhibition &amp; Community<br>19:00-21:00 DJ Set (@boundarybetween)</dd>
+    </div>
+    <div class="info__row">
+      <dt>입장료</dt>
+      <dd>
+        Ticket: 30,000 (사전 신청)<br>
+        (Wine, finger food &amp; truffle ice cream included)<br>
+        와인, 트러플 아이스크림, 핑거푸드가 제공됩니다.
+        <span class="info__note">** 공간 특성상 한정 수량으로 진행되며, 소진 시 마감됩니다.</span>
+      </dd>
+    </div>
+  </dl>
+  <img class="info__logo" src="assets/logo.png" alt="girinhaus" width="600" height="152">
+</section>
+
+<main class="apply" id="apply">
+  <div class="truffles" id="truffles" data-step="0" aria-hidden="true">
+    <img src="assets/truffle1.png" alt="" width="190" height="177">
+    <img src="assets/truffle2.png" alt="" width="202" height="184">
+    <img src="assets/truffle3.png" alt="" width="233" height="214">
+  </div>
+  <p class="sr-only" id="progress-label" aria-live="polite"></p>
+
+  <div class="stage" id="stage">
+    <!-- 시작 -->
+    <div class="cta" id="cta">
+      <button class="btn" type="button" id="open-form">신청하기</button>
+    </div>
+
+    <!-- 신청 폼 -->
+    <form class="form" id="form" hidden novalidate autocomplete="on">
+      <!-- 봇 방지용 (사람은 볼 수 없음) -->
+      <div class="hp" aria-hidden="true">
+        <label>웹사이트 <input type="text" name="website" tabindex="-1" autocomplete="off"></label>
+      </div>
+
+      <fieldset class="step" data-step="1" hidden>
+        <legend><span class="step__no">1 / 3</span>기본 정보</legend>
+
+        <div class="field">
+          <label for="f-name">이름 <em>필수</em></label>
+          <input id="f-name" name="name" type="text" autocomplete="name" maxlength="30" required>
+          <p class="field__error" role="alert"></p>
+        </div>
+        <div class="field">
+          <label for="f-phone">연락처 <em>필수</em></label>
+          <input id="f-phone" name="phone" type="tel" inputmode="numeric" autocomplete="tel" placeholder="010-0000-0000" maxlength="13" required>
+          <p class="field__error" role="alert"></p>
+        </div>
+        <div class="field">
+          <label for="f-email">이메일 <span class="opt">선택</span></label>
+          <input id="f-email" name="email" type="email" autocomplete="email" placeholder="name@example.com">
+          <p class="field__error" role="alert"></p>
+        </div>
+      </fieldset>
+
+      <fieldset class="step" data-step="2" hidden>
+        <legend><span class="step__no">2 / 3</span>참가 정보</legend>
+
+        <div class="field">
+          <span class="label" id="l-guests">참가 인원 <em>필수</em></span>
+          <div class="stepper" role="group" aria-labelledby="l-guests">
+            <button type="button" id="guests-minus" aria-label="인원 줄이기">−</button>
+            <output id="guests-out" for="guests-minus guests-plus">1</output>
+            <button type="button" id="guests-plus" aria-label="인원 늘리기">+</button>
+          </div>
+          <input type="hidden" name="guests" id="f-guests" value="1">
+          <p class="field__hint" id="guests-hint"></p>
+        </div>
+
+        <div class="field">
+          <span class="label" id="l-source">기린하우스를 어떻게 알게 되셨나요? <span class="opt">선택</span></span>
+          <div class="chips" role="radiogroup" aria-labelledby="l-source">
+            <label><input type="radio" name="source" value="인스타그램"><span>인스타그램</span></label>
+            <label><input type="radio" name="source" value="지인 추천"><span>지인 추천</span></label>
+            <label><input type="radio" name="source" value="기린하우스 방문"><span>기린하우스 방문</span></label>
+            <label><input type="radio" name="source" value="기타"><span>기타</span></label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="f-note">알레르기 · 요청사항 <span class="opt">선택</span></label>
+          <textarea id="f-note" name="note" rows="3" maxlength="300" placeholder="유제품·견과류 등 식이 제한이나 미리 전하고 싶은 말이 있다면 적어주세요."></textarea>
+        </div>
+      </fieldset>
+
+      <fieldset class="step" data-step="3" hidden>
+        <legend><span class="step__no">3 / 3</span>신청 내용 확인</legend>
+
+        <dl class="summary" id="summary"></dl>
+
+        <label class="check">
+          <input type="checkbox" name="consent" id="f-consent" required>
+          <span>
+            개인정보 수집·이용에 동의합니다. <em>필수</em>
+            <small>수집 항목: 이름, 연락처, 이메일(선택) · 이용 목적: 행사 참가 확인 및 안내 · 보유 기간: 행사 종료 후 파기</small>
+          </span>
+        </label>
+        <p class="field__error" id="consent-error" role="alert"></p>
+      </fieldset>
+
+      <p class="form__error" id="form-error" role="alert"></p>
+
+      <div class="form__nav">
+        <button class="link" type="button" id="btn-prev">이전</button>
+        <button class="btn" type="submit" id="btn-next">다음</button>
+      </div>
+    </form>
+
+    <!-- 완료 -->
+    <div class="done" id="done" hidden tabindex="-1">
+      <h2>신청이 접수되었어요</h2>
+      <p class="done__lead">기린하우스에서 만나요.</p>
+      <p class="done__sub">입장료 안내는 남겨주신 연락처로 전달드릴게요.</p>
+      <ul class="done__meta">
+        <li>10월 10일 토요일, 오후 5시–9시</li>
+        <li>기린하우스 (운천동 1575)</li>
+      </ul>
+      <button class="btn btn--ghost" type="button" id="add-cal">캘린더에 추가</button>
+    </div>
+
+    <!-- 마감 -->
+    <div class="cta" id="closed" hidden>
+      <button class="btn" type="button" disabled>마감되었습니다</button>
+    </div>
+  </div>
+</main>
+
+<script src="script.js"></script>
+</body>
+</html>
