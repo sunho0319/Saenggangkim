@@ -1,6 +1,10 @@
 (() => {
   "use strict";
 
+  /* 새로고침 시 이전 스크롤 위치 대신 항상 맨 위에서 시작 */
+  if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+  window.scrollTo(0, 0);
+
   /* ─────────────── 설정 ─────────────── */
   const CONFIG = {
     // 신청 내용을 받을 주소 (Google Apps Script 웹 앱 URL 등). README.md 참고.
@@ -12,7 +16,7 @@
     EVENT: {
       title: "Truffle Scoop @ 기린하우스",
       location: "기린하우스 (운천동 1575)",
-      description: "Exhibition & Community 17:00-21:00 / DJ Set 19:00-21:00 (@boundarybetween)",
+      description: "Exhibition & Community 17:00-21:00 / DJ Set 19:00-21:00",
       // 2026-10-10 17:00–21:00 KST = 08:00–12:00 UTC
       startUtc: "20261010T080000Z",
       endUtc: "20261010T120000Z",
@@ -23,7 +27,7 @@
   const $ = (id) => document.getElementById(id);
   const apply = $("apply"), truffles = $("truffles"), progress = $("progress-label");
   const cta = $("cta"), closed = $("closed"), form = $("form"), done = $("done");
-  const btnOpen = $("open-form"), btnPrev = $("btn-prev"), btnNext = $("btn-next");
+  const btnPrev = $("btn-prev"), btnNext = $("btn-next");
   const steps = [...form.querySelectorAll(".step")];
   const formError = $("form-error");
   const guestsOut = $("guests-out"), guestsInput = $("f-guests");
@@ -41,12 +45,7 @@
     closed.hidden = false;
   }
 
-  btnOpen.addEventListener("click", () => {
-    cta.hidden = true;
-    form.hidden = false;
-    apply.classList.add("is-open");
-    goTo(1);
-  });
+  // 신청하기 버튼은 구글 폼으로 연결됨 (index.html의 #open-form 링크)
 
   /* ─────────────── 단계 이동 ─────────────── */
   function goTo(n) {

@@ -46,7 +46,7 @@ button, input, textarea { font: inherit; color: inherit; }
   padding: clamp(56px, 11vh, 132px) 24px clamp(72px, 10vh, 120px);
 }
 .hero__inner {
-  max-width: 760px;
+  max-width: 880px;
   margin: 0 auto;
   display: flex; flex-direction: column; align-items: center;
 }
@@ -64,6 +64,10 @@ button, input, textarea { font: inherit; color: inherit; }
   text-wrap: pretty;
 }
 .hero__copy p + p { margin-top: 2em; }
+/* 좁은 화면에서는 강제 줄바꿈을 풀어 자연스럽게 흐르게 한다 */
+@media (max-width: 819px) { .hero__copy br { display: none; } }
+/* 넓은 화면에서는 지정한 줄바꿈(<br>) 위치에서만 줄이 바뀌게 한다 */
+@media (min-width: 820px) { .hero__copy p { white-space: nowrap; } }
 
 /* 넓은 화면에서는 가로 방향 사진을 쓴다 */
 @media (min-width: 820px) {
@@ -146,6 +150,7 @@ button, input, textarea { font: inherit; color: inherit; }
   font-size: 15px; letter-spacing: .02em; cursor: pointer;
   transition: background .2s, transform .1s;
 }
+a.btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
 .btn:hover { background: var(--brown-hover); }
 .btn:active { transform: translateY(1px); }
 .btn:disabled { background: #b9b3a8; cursor: not-allowed; }
