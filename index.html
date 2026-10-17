@@ -8,7 +8,7 @@
   @font-face {
     font-family: "KoPub Batang";
     src: local("KoPubWorld Batang_Pro Medium"), local("KoPubWorldBatangPM"),
-         url("fonts/KoPubWorldBatang-Medium-mochi.woff2") format("woff2");   /* subset: only 모찌 */
+         url("/mochi/fonts/KoPubWorldBatang-Medium-mochi.woff2") format("woff2");   /* subset: only 모찌 */
     font-weight: 500;
     font-display: block;
   }
@@ -236,10 +236,29 @@
   let landmarker = null, lastVideoTime = -1;
   const hands = new Map();          // id → { pinching, sx, sy (smoothed pinch point), tips }
 
+  const isPhone = matchMedia('(pointer: coarse)').matches;
+  let delegate = null, Fileset = null, Landmarker = null;
+
+  // MediaPipe's GPU path is unreliable on phones (esp. iOS Safari), so phones start on CPU;
+  // if the GPU path fails later on desktop, we rebuild on CPU.
+  async function makeLandmarker(d) {
+    delegate = d;
+    return Landmarker.createFromOptions(Fileset, {
+      baseOptions: { modelAssetPath: MODEL, delegate: d }, runningMode: 'VIDEO', numHands: 2
+    });
+  }
+
   async function startCamera() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      toast('이 브라우저에선 카메라를 쓸 수 없어요 · Safari나 Chrome으로 열어주세요', 6000);
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false
+        video: isPhone
+          ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }    // lighter for phones
+          : { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
       });
       video.srcObject = stream;
       await video.play();
@@ -247,18 +266,26 @@
       onCamera = true; build();
     } catch (err) {
       console.warn('camera unavailable — mouse only', err);
+      toast(err.name === 'NotAllowedError'
+        ? '카메라 권한이 꺼져 있어요 · 설정에서 허용한 뒤 새로고침해 주세요'
+        : '카메라를 켤 수 없어요 · 앱 안 브라우저라면 Safari/Chrome으로 열어주세요', 6000);
       return;
     }
+    toast('손 인식 준비 중…', 60000);
     try {
-      const { FilesetResolver, HandLandmarker } = await import(`${MP}/vision_bundle.mjs`);
-      const files = await FilesetResolver.forVisionTasks(`${MP}/wasm`);
-      const opts = d => ({ baseOptions: { modelAssetPath: MODEL, delegate: d }, runningMode: 'VIDEO', numHands: 2 });
-      landmarker = await HandLandmarker.createFromOptions(files, opts('GPU'))
-        .catch(() => HandLandmarker.createFromOptions(files, opts('CPU')));
+      const mp = await import(`${MP}/vision_bundle.mjs`);
+      Fileset = await mp.FilesetResolver.forVisionTasks(`${MP}/wasm`);
+      Landmarker = mp.HandLandmarker;
+      landmarker = isPhone
+        ? await makeLandmarker('CPU')
+        : await makeLandmarker('GPU').catch(() => makeLandmarker('CPU'));
+      toast('엄지와 검지로 글자를 집어 당겨보세요', 3500);
     } catch (err) {
       console.warn('hand tracking unavailable', err);
+      toast('손 인식을 불러오지 못했어요 · 손가락 터치로는 늘릴 수 있어요', 6000);
     }
   }
+
 
   // normalized video coords → screen coords (object-fit: cover + mirrored)
   function toScreen(p) {
@@ -270,7 +297,16 @@
   function trackHands(now) {
     if (!landmarker || video.readyState < 2 || video.currentTime === lastVideoTime) return;
     lastVideoTime = video.currentTime;
-    const res = landmarker.detectForVideo(video, now);
+    let res;
+    try { res = landmarker.detectForVideo(video, now); }
+    catch (err) {
+      // a failing detector must never stop the animation loop
+      console.warn('hand detection failed', err);
+      const failed = landmarker; landmarker = null;
+      if (delegate === 'GPU') makeLandmarker('CPU').then(l => landmarker = l).catch(() => {});
+      try { failed.close(); } catch {}
+      return;
+    }
     const seen = new Set();
     (res.landmarks || []).forEach((lm, i) => {
       let id = 'hand-' + (res.handedness?.[i]?.[0]?.categoryName || i);
@@ -310,9 +346,9 @@
   const comp = document.createElement('canvas'), cx2 = comp.getContext('2d');
   let recorder = null, recStart = 0, recTimer = null;
 
-  function toast(msg) {
+  function toast(msg, ms = 2200) {
     toastEl.textContent = msg; toastEl.classList.add('show');
-    clearTimeout(toastEl._t); toastEl._t = setTimeout(() => toastEl.classList.remove('show'), 2200);
+    clearTimeout(toastEl._t); toastEl._t = setTimeout(() => toastEl.classList.remove('show'), ms);
   }
 
   function composite() {
@@ -389,8 +425,8 @@
   // chopsticks follow the thumb and index finger (the mouse cursor is hidden, so this shows where the hand is)
   // tip/butt = where each stick's ends sit inside its cut-out PNG
   const CHOPSTICKS = [
-    { src: 'img/chopstick-1.png', tip: [13.9, 857.3], butt: [1304.9, 28.9] },
-    { src: 'img/chopstick-2.png', tip: [13.4, 729.3], butt: [1352.8, 28.5] },
+    { src: '/mochi/img/chopstick-1.png', tip: [13.9, 857.3], butt: [1304.9, 28.9] },
+    { src: '/mochi/img/chopstick-2.png', tip: [13.4, 729.3], butt: [1352.8, 28.5] },
   ].map(c => Object.assign(c, { img: Object.assign(new Image(), { src: c.src }) }));
 
   function drawStick(c, s) {
