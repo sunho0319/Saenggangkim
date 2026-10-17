@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>모찌</title>
+<style>
+  @font-face {
+    font-family: "KoPub Batang";
+    src: local("KoPubWorld Batang_Pro Medium"), local("KoPubWorldBatangPM"),
+         url("/mochi/fonts/KoPubWorldBatang-Medium-mochi.woff2") format("woff2");   /* subset: only 모찌 */
+    font-weight: 500;
+    font-display: block;
+  }
+  html, body { margin: 0; height: 100%; background: #fff; overflow: hidden; overscroll-behavior: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+  body { display: grid; place-items: center; }
+  h1 {
+    margin: 0;
+    font-family: "KoPub Batang", serif;
+    font-weight: 500;
+    font-size: clamp(96px, 22vw, 320px);
+    line-height: 1;
+    color: #111;
+  }
+  @media (max-width: 600px) {
+    h1 { font-size: max(96px, 30vw); }
+  }
+  /* once the WebGL dough is ready, the heading stays only for screen readers */
+  .gl h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; }
+  #hud { pointer-events: none; }
+  /* camera background, mirrored like a selfie */
+  #cam {
+    position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover;
+    transform: scaleX(-1); opacity: 0; transition: opacity .6s;
+  }
+  #cam.on { opacity: 1; }
+  /* record button — the only thing that shows a cursor */
+  #rec {
+    position: fixed; left: 50%; bottom: calc(28px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 5;
+    display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 18px 0 14px;
+    border: 0; border-radius: 999px; background: rgba(0,0,0,.45); color: #fff;
+    font: 600 14px/1 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); cursor: pointer;
+    font-variant-numeric: tabular-nums; transition: background .2s;
+  }
+  #rec:hover { background: rgba(0,0,0,.6); }
+  #rec i { width: 14px; height: 14px; border-radius: 50%; background: #ff3b30; transition: border-radius .2s; }
+  #rec.on i { border-radius: 3px; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: .35; } }
+  #toast {
+    position: fixed; left: 50%; bottom: calc(84px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 5;
+    max-width: calc(100vw - 32px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    padding: 8px 14px; border-radius: 10px; background: rgba(0,0,0,.6); color: #fff;
+    font: 13px -apple-system, "Apple SD Gothic Neo", sans-serif; opacity: 0; transition: opacity .3s; pointer-events: none;
+  }
+  #toast.show { opacity: 1; }
+  /* phones: after recording, a tap opens the share sheet (→ 동영상 저장) */
+  #save {
+    position: fixed; left: 50%; bottom: calc(84px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 6;
+    height: 44px; padding: 0 20px; border: 0; border-radius: 999px; background: #fff; color: #111;
+    font: 600 14px/1 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif;
+    box-shadow: 0 6px 20px rgba(0,0,0,.25); cursor: pointer;
+  }
+  #save[hidden] { display: none; }
+  html, body, canvas { cursor: none; }
+</style>
+</head>
+<body>
+  <h1 id="word">모찌</h1>
+  <video id="cam" playsinline muted autoplay aria-hidden="true"></video>
+  <canvas id="gl" aria-hidden="true"></canvas>
+  <canvas id="hud" aria-hidden="true"></canvas>
+  <button id="rec" title="녹화 (R)"><i></i><span>녹화</span></button>
+  <button id="save" hidden>영상 저장하기</button>
+  <div id="toast" role="status"></div>
+
+<script>
+(async () => {
+  const word = document.getElementById('word');
+  const cv = document.getElementById('gl');
+  const gl = cv.getContext('webgl', { premultipliedAlpha: true, antialias: true });
+  if (!gl) { cv.remove(); return; }   // no WebGL: plain heading stays
+
+  const FONT = '"KoPub Batang", serif';
+  await document.fonts.load(`500 100px ${FONT}`, word.textContent);
+
+  // ---------- shaders ----------
+  const vs = `
+    attribute vec2 aPos; attribute vec2 aUv;
+    uniform vec2 uRes; varying vec2 vUv;
+    void main() {
+      vUv = aUv;
+      vec2 c = aPos / uRes * 2.0 - 1.0;
+      gl_Position = vec4(c.x, -c.y, 0.0, 1.0);
+    }`;
+  const fs = `
+    precision mediump float;
+    uniform sampler2D uTex; varying vec2 vUv;
+    void main() { gl_FragColor = texture2D(uTex, vUv); }`;
+  const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(prog); gl.useProgram(prog);
+  const aPos = gl.getAttribLocation(prog, 'aPos'), aUv = gl.getAttribLocation(prog, 'aUv');
+  const uRes = gl.getUniformLocation(prog, 'uRes');
+  const posBuf = gl.createBuffer(), uvBuf = gl.createBuffer(), idxBuf = gl.createBuffer();
+  const tex = gl.createTexture();
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+  // ---------- mesh state ----------
+  const GX = 90, GY = 46;                 // grid resolution
+  let W, H, dpr, rest, disp, vel, pos, inkMask, box;
+  let onCamera = false;             // white letters over the camera, dark ones on the plain white page
+
+  function build() {
+    dpr = Math.min(devicePixelRatio || 1, 2);
+    W = innerWidth; H = innerHeight;
+    cv.width = hud.width = W * dpr; cv.height = hud.height = H * dpr;
+    gl.viewport(0, 0, cv.width, cv.height);
+
+    // draw the word into a texture, same size/position as the CSS heading
+    const size = W <= 600 ? Math.max(96, W * 0.3) : Math.max(96, Math.min(320, W * 0.22));
+    const t = document.createElement('canvas'), c = t.getContext('2d', { willReadFrequently: true });
+    c.font = `500 ${size}px ${FONT}`;
+    const m = c.measureText(word.textContent);
+    const pad = size * 0.35;
+    const tw = m.width + pad * 2, th = size + pad * 2;
+    t.width = Math.ceil(tw * dpr); t.height = Math.ceil(th * dpr);
+    c.scale(dpr, dpr);
+    c.font = `500 ${size}px ${FONT}`;
+    c.fillStyle = onCamera ? '#fff' : '#111'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    if (onCamera) { c.shadowColor = 'rgba(0,0,0,.28)'; c.shadowBlur = size * 0.04; }   // stays readable on bright scenes
+    c.fillText(word.textContent, tw / 2, th / 2 + size * 0.04);
+    inkMask = { data: c.getImageData(0, 0, t.width, t.height).data, w: t.width, h: t.height };
+
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    box = { x: (W - tw) / 2, y: (H - th) / 2, w: tw, h: th, size };
+    const n = (GX + 1) * (GY + 1);
+    rest = new Float32Array(n * 2); disp = new Float32Array(n * 2); vel = new Float32Array(n * 2);
+    pos = new Float32Array(n * 2);
+    const uv = new Float32Array(n * 2), idx = new Uint16Array(GX * GY * 6);
+    for (let j = 0, k = 0; j <= GY; j++) for (let i = 0; i <= GX; i++, k++) {
+      uv[k * 2] = i / GX; uv[k * 2 + 1] = j / GY;
+      rest[k * 2] = box.x + tw * i / GX; rest[k * 2 + 1] = box.y + th * j / GY;
+    }
+    for (let j = 0, q = 0; j < GY; j++) for (let i = 0; i < GX; i++) {
+      const a = j * (GX + 1) + i, b = a + 1, c2 = a + GX + 1, d = c2 + 1;
+      idx.set([a, b, c2, b, d, c2], q); q += 6;
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf); gl.bufferData(gl.ARRAY_BUFFER, uv, gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+    grabs.clear();
+  }
+
+  // is there ink (a letter stroke) under this screen point, at rest shape?
+  function touchesInk(x, y, r = 4) {
+    const st = Math.max(2, r / 4);
+    for (let dy = -r; dy <= r; dy += st) for (let dx = -r; dx <= r; dx += st) {
+      const px = Math.round((x + dx - box.x) * dpr), py = Math.round((y + dy - box.y) * dpr);
+      if (px < 0 || py < 0 || px >= inkMask.w || py >= inkMask.h) continue;
+      if (inkMask.data[(py * inkMask.w + px) * 4 + 3] > 90) return true;
+    }
+    return false;
+  }
+
+  // ---------- interaction ----------
+  // Anything that touches a letter (mouse, or a pinching hand) sticks to that spot;
+  // moving away stretches the dough until it gets too far, then it lets go and wobbles back.
+  // Several grabs can pull at once (two hands → stretch both ways).
+  const grabs = new Map();          // id → { x, y: anchor on the letter, cx, cy: where it's pulled to }
+  const cooldown = {};
+  const maxPull = () => box.size * 0.9;
+
+  function hold(id, x, y, reach) {
+    const g = grabs.get(id), now = performance.now();
+    if (g) { g.cx = x; g.cy = y; return; }
+    if (now > (cooldown[id] || 0) && touchesInk(x, y, reach)) grabs.set(id, { x, y, cx: x, cy: y });
+  }
+  function release(id) {
+    if (grabs.delete(id)) cooldown[id] = performance.now() + 280;
+  }
+
+  const pid = e => e.pointerType === 'mouse' ? 'mouse' : 'touch-' + e.pointerId;
+  const reach = e => e.pointerType === 'mouse' ? 4 : 16;
+  cv.addEventListener('pointermove', e => hold(pid(e), e.clientX, e.clientY, reach(e)));
+  cv.addEventListener('pointerdown', e => { cv.setPointerCapture(e.pointerId); hold(pid(e), e.clientX, e.clientY, reach(e)); });
+  cv.addEventListener('pointerleave', e => release(pid(e)));
+  cv.addEventListener('pointercancel', e => release(pid(e)));
+  cv.addEventListener('pointerup', e => { if (e.pointerType !== 'mouse') release(pid(e)); });
+  // no long-press menu / double-tap zoom on the dough
+  cv.addEventListener('contextmenu', e => e.preventDefault());
+
+  // ---------- physics ----------
+  function step(dt) {
+    const pulls = [];
+    for (const [id, g] of grabs) {
+      const px = g.cx - g.x, py = g.cy - g.y, len = Math.hypot(px, py);
+      if (len > maxPull()) { release(id); continue; }      // snapped
+      // neck widens as it stretches, so the mesh never folds over
+      const sigma = Math.max(box.size * 0.11, len * 0.62);
+      pulls.push({ x: g.x, y: g.y, px, py, inv: 1 / (2 * sigma * sigma) });
+    }
+    const pulling = pulls.length > 0;
+    // chewy while held (lagging, heavy), springy once released (overshoot and jiggle)
+    const k = pulling ? 140 : 260, c = pulling ? 14 : 7.5;
+    const n = rest.length / 2;
+    for (let i = 0; i < n; i++) {
+      const ix = i * 2, iy = ix + 1;
+      let tx = 0, ty = 0;
+      for (const p of pulls) {
+        const dx = rest[ix] - p.x, dy = rest[iy] - p.y;
+        const w = Math.exp(-(dx * dx + dy * dy) * p.inv);
+        tx += p.px * w; ty += p.py * w;
+      }
+      vel[ix] += (k * (tx - disp[ix]) - c * vel[ix]) * dt;
+      vel[iy] += (k * (ty - disp[iy]) - c * vel[iy]) * dt;
+      disp[ix] += vel[ix] * dt; disp[iy] += vel[iy] * dt;
+      pos[ix] = rest[ix] + disp[ix]; pos[iy] = rest[iy] + disp[iy];
+    }
+  }
+
+  // ---------- camera + hand tracking ----------
+  const video = document.getElementById('cam');
+  const hud = document.getElementById('hud'), hx = hud.getContext('2d');
+  const MP = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1';
+  const MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+  let landmarker = null, lastVideoTime = -1;
+  const hands = new Map();          // id → { pinching, sx, sy (smoothed pinch point), tips }
+
+  const isPhone = matchMedia('(pointer: coarse)').matches;
+  let delegate = null, Fileset = null, Landmarker = null;
+
+  // MediaPipe's GPU path is unreliable on phones (esp. iOS Safari), so phones start on CPU;
+  // if the GPU path fails later on desktop, we rebuild on CPU.
+  async function makeLandmarker(d) {
+    delegate = d;
+    return Landmarker.createFromOptions(Fileset, {
+      baseOptions: { modelAssetPath: MODEL, delegate: d }, runningMode: 'VIDEO', numHands: 2
+    });
+  }
+
+  async function startCamera() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      toast('이 브라우저에선 카메라를 쓸 수 없어요 · Safari나 Chrome으로 열어주세요', 6000);
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: isPhone
+          ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }    // lighter for phones
+          : { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+      video.classList.add('on');
+      onCamera = true; build();
+    } catch (err) {
+      console.warn('camera unavailable — mouse only', err);
+      toast(err.name === 'NotAllowedError'
+        ? '카메라 권한이 꺼져 있어요 · 설정에서 허용한 뒤 새로고침해 주세요'
+        : '카메라를 켤 수 없어요 · 앱 안 브라우저라면 Safari/Chrome으로 열어주세요', 6000);
+      return;
+    }
+    toast('손 인식 준비 중…', 60000);
+    try {
+      const mp = await import(`${MP}/vision_bundle.mjs`);
+      Fileset = await mp.FilesetResolver.forVisionTasks(`${MP}/wasm`);
+      Landmarker = mp.HandLandmarker;
+      landmarker = isPhone
+        ? await makeLandmarker('CPU')
+        : await makeLandmarker('GPU').catch(() => makeLandmarker('CPU'));
+      toast('엄지와 검지로 글자를 집어 당겨보세요', 3500);
+    } catch (err) {
+      console.warn('hand tracking unavailable', err);
+      toast('손 인식을 불러오지 못했어요 · 손가락 터치로는 늘릴 수 있어요', 6000);
+    }
+  }
+
+
+  // normalized video coords → screen coords (object-fit: cover + mirrored)
+  function toScreen(p) {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    const s = Math.max(W / vw, H / vh), dw = vw * s, dh = vh * s;
+    return { x: (W - dw) / 2 + (1 - p.x) * dw, y: (H - dh) / 2 + p.y * dh };
+  }
+
+  function trackHands(now) {
+    if (!landmarker || video.readyState < 2 || video.currentTime === lastVideoTime) return;
+    lastVideoTime = video.currentTime;
+    let res;
+    try { res = landmarker.detectForVideo(video, now); }
+    catch (err) {
+      // a failing detector must never stop the animation loop
+      console.warn('hand detection failed', err);
+      const failed = landmarker; landmarker = null;
+      if (delegate === 'GPU') makeLandmarker('CPU').then(l => landmarker = l).catch(() => {});
+      try { failed.close(); } catch {}
+      return;
+    }
+    const seen = new Set();
+    (res.landmarks || []).forEach((lm, i) => {
+      let id = 'hand-' + (res.handedness?.[i]?.[0]?.categoryName || i);
+      if (seen.has(id)) id += i;
+      seen.add(id);
+      const thumb = toScreen(lm[4]), index = toScreen(lm[8]);
+      const wrist = toScreen(lm[0]), knuckle = toScreen(lm[5]);
+      // pinch = fingertips close relative to hand size (hysteresis so it doesn't flicker)
+      const ratio = Math.hypot(thumb.x - index.x, thumb.y - index.y) / Math.max(1, Math.hypot(wrist.x - knuckle.x, wrist.y - knuckle.y));
+      const h = hands.get(id) || { pinching: false, sx: 0, sy: 0 };
+      const mx = (thumb.x + index.x) / 2, my = (thumb.y + index.y) / 2;
+      const wasPinching = h.pinching;
+      h.pinching = wasPinching ? ratio < 0.45 : ratio < 0.28;
+      if (h.pinching && !wasPinching) { h.sx = mx; h.sy = my; }
+      else { h.sx += (mx - h.sx) * 0.55; h.sy += (my - h.sy) * 0.55; }   // smooth out jitter
+      // each chopstick: tip on the fingertip, body running back along that finger (thumb → its base, index → its knuckle)
+      const size = Math.hypot(wrist.x - knuckle.x, wrist.y - knuckle.y);
+      const sticks = [[thumb, toScreen(lm[2])], [index, knuckle]].map(([tip, base]) => {
+        const dx = base.x - tip.x, dy = base.y - tip.y, d = Math.hypot(dx, dy) || 1, L = size * 2.6;
+        return { tx: tip.x, ty: tip.y, bx: tip.x + dx / d * L, by: tip.y + dy / d * L };
+      });
+      // smooth the sticks too, so they don't shiver
+      h.sticks = h.sticks ? h.sticks.map((o, k) => {
+        const n = sticks[k], f = 0.5;
+        return { tx: o.tx + (n.tx - o.tx) * f, ty: o.ty + (n.ty - o.ty) * f, bx: o.bx + (n.bx - o.bx) * f, by: o.by + (n.by - o.by) * f };
+      }) : sticks;
+      hands.set(id, h);
+      if (h.pinching) hold(id, h.sx, h.sy, 22); else release(id);
+    });
+    for (const id of [...hands.keys()]) if (!seen.has(id)) { hands.delete(id); release(id); }
+  }
+
+  // ---------- screen recording ----------
+  // Camera + dough + chopsticks are composited into one canvas each frame and recorded from there,
+  // so the saved video has no buttons on it.
+  const recBtn = document.getElementById('rec'), toastEl = document.getElementById('toast');
+  const comp = document.createElement('canvas'), cx2 = comp.getContext('2d');
+  let recorder = null, recStart = 0, recTimer = null;
+
+  function toast(msg, ms = 2200) {
+    toastEl.textContent = msg; toastEl.classList.add('show');
+    clearTimeout(toastEl._t); toastEl._t = setTimeout(() => toastEl.classList.remove('show'), ms);
+  }
+
+  function composite() {
+    const w = comp.width, h = comp.height;
+    if (video.classList.contains('on') && video.videoWidth) {
+      const vw = video.videoWidth, vh = video.videoHeight, s = Math.max(w / vw, h / vh);
+      cx2.save(); cx2.translate(w, 0); cx2.scale(-1, 1);        // mirrored, like the screen
+      cx2.drawImage(video, (w - vw * s) / 2, (h - vh * s) / 2, vw * s, vh * s);
+      cx2.restore();
+    } else { cx2.fillStyle = '#fff'; cx2.fillRect(0, 0, w, h); }
+    cx2.drawImage(cv, 0, 0, w, h);
+    cx2.drawImage(hud, 0, 0, w, h);   // chopsticks
+  }
+
+  const saveBtn = document.getElementById('save');
+  function download(file) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(file); a.download = file.name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  }
+
+  function startRecording() {
+    saveBtn.hidden = true;
+    const types = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'];
+    const mimeType = types.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t));
+    if (!mimeType) { toast('이 브라우저는 녹화를 지원하지 않아요'); return; }
+    const scale = Math.min(1, 1920 / Math.max(cv.width, cv.height));   // cap at ~1080p for file size
+    comp.width = Math.round(cv.width * scale / 2) * 2; comp.height = Math.round(cv.height * scale / 2) * 2;
+    composite();
+    const chunks = [];
+    recorder = new MediaRecorder(comp.captureStream(30), { mimeType, videoBitsPerSecond: 8e6 });
+    recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, { type: mimeType.split(';')[0] });
+      const ext = mimeType.startsWith('video/mp4') ? 'mp4' : 'webm';
+      const d = new Date(), pad = n => String(n).padStart(2, '0');
+      const name = `mochi-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.${ext}`;
+      const file = new File([blob], name, { type: blob.type });
+      const phone = matchMedia('(pointer: coarse)').matches;
+      if (phone && navigator.canShare && navigator.canShare({ files: [file] })) {
+        // share needs a fresh tap, so offer a button instead of opening it right away
+        saveBtn.hidden = false;
+        saveBtn.onclick = async () => {
+          try { await navigator.share({ files: [file] }); saveBtn.hidden = true; }
+          catch (err) { if (err.name !== 'AbortError') { download(file); saveBtn.hidden = true; } }
+        };
+      } else {
+        download(file);
+        toast(`저장했어요 · ${name}`);
+      }
+    };
+    recorder.start(250);
+    recStart = performance.now();
+    recBtn.classList.add('on');
+    const label = recBtn.querySelector('span');
+    const tick = () => {
+      const t = Math.floor((performance.now() - recStart) / 1000);
+      label.textContent = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+    };
+    tick(); recTimer = setInterval(tick, 250);
+  }
+
+  function stopRecording() {
+    clearInterval(recTimer);
+    recorder.stop(); recorder = null;
+    recBtn.classList.remove('on');
+    recBtn.querySelector('span').textContent = '녹화';
+  }
+
+  const toggleRecording = () => recorder ? stopRecording() : startRecording();
+  recBtn.addEventListener('click', toggleRecording);
+  addEventListener('keydown', e => { if ((e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey) toggleRecording(); });
+
+  // chopsticks follow the thumb and index finger (the mouse cursor is hidden, so this shows where the hand is)
+  // tip/butt = where each stick's ends sit inside its cut-out PNG
+  const CHOPSTICKS = [
+    { src: '/mochi/img/chopstick-1.png', tip: [13.9, 857.3], butt: [1304.9, 28.9] },
+    { src: '/mochi/img/chopstick-2.png', tip: [13.4, 729.3], butt: [1352.8, 28.5] },
+  ].map(c => Object.assign(c, { img: Object.assign(new Image(), { src: c.src }) }));
+
+  function drawStick(c, s) {
+    if (!c.img.complete || !c.img.naturalWidth) return;
+    const ia = Math.atan2(c.butt[1] - c.tip[1], c.butt[0] - c.tip[0]);
+    const sa = Math.atan2(s.by - s.ty, s.bx - s.tx);
+    const k = Math.hypot(s.bx - s.tx, s.by - s.ty) / Math.hypot(c.butt[0] - c.tip[0], c.butt[1] - c.tip[1]);
+    hx.save();
+    hx.translate(s.tx, s.ty); hx.rotate(sa - ia); hx.scale(k, k);
+    hx.drawImage(c.img, -c.tip[0], -c.tip[1]);
+    hx.restore();
+  }
+
+  function drawHud() {
+    hx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    hx.clearRect(0, 0, W, H);
+    hx.shadowColor = 'rgba(0,0,0,.25)'; hx.shadowBlur = 8; hx.shadowOffsetY = 3;
+    for (const h of hands.values()) if (h.sticks) h.sticks.forEach((s, k) => drawStick(CHOPSTICKS[k], s));
+    hx.shadowColor = 'transparent';
+  }
+
+  let last = performance.now();
+  function frame(now) {
+    let dt = Math.min(0.05, (now - last) / 1000); last = now;
+    // fixed substeps keep the springs stable on slow frames
+    const sub = Math.ceil(dt / (1 / 120));
+    trackHands(now);
+    for (let s = 0; s < sub; s++) step(dt / sub);
+    drawHud();
+
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform2f(uRes, W, H);
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuf); gl.bufferData(gl.ARRAY_BUFFER, pos, gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
+    gl.enableVertexAttribArray(aUv); gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+    gl.drawElements(gl.TRIANGLES, GX * GY * 6, gl.UNSIGNED_SHORT, 0);
+    if (recorder) composite();   // same frame as the draw, so the WebGL buffer is still readable
+    requestAnimationFrame(frame);
+  }
+
+  build();
+  let rt = null, builtFor = innerWidth + 'x' + innerHeight;
+  addEventListener('resize', () => {
+    clearTimeout(rt);
+    rt = setTimeout(() => {
+      const key = innerWidth + 'x' + innerHeight;
+      if (key !== builtFor) { builtFor = key; build(); }
+    }, 200);
+  });
+  document.body.classList.add('gl');
+  requestAnimationFrame(frame);
+  startCamera();
+})();
+</script>
+</body>
+</html>
