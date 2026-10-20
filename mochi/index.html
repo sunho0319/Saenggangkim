@@ -8,7 +8,7 @@
   @font-face {
     font-family: "KoPub Batang";
     src: local("KoPubWorld Batang_Pro Medium"), local("KoPubWorldBatangPM"),
-         url("/mochi/fonts/KoPubWorldBatang-Medium-mochi.woff2") format("woff2");   /* subset: only 모찌 */
+         url("/mochi/fonts/KoPubWorldBatang-Medium-sub.woff2") format("woff2");   /* subset: only the characters this page uses */
     font-weight: 500;
     font-display: block;
   }
@@ -35,6 +35,24 @@
     transform: scaleX(-1); opacity: 0; transition: opacity .6s;
   }
   #cam.on { opacity: 1; }
+  /* top credit line — drifts left ↔ right, links to Instagram */
+  #tag {
+    position: fixed; top: calc(20px + env(safe-area-inset-top)); left: 0; right: 0; height: 24px; z-index: 5;
+    pointer-events: none;
+  }
+  #tag a {
+    position: absolute; top: 0; left: 20px; white-space: nowrap; pointer-events: auto; cursor: pointer;
+    font: 500 16px/24px "KoPub Batang", serif; color: #111; text-decoration: none;
+    animation: drift 12s ease-in-out infinite alternate;
+  }
+  .cam #tag a { color: #fff; text-shadow: 0 1px 6px rgba(0,0,0,.35); }
+  #tag a:hover { text-decoration: underline; text-underline-offset: 4px; }
+  @keyframes drift {
+    from { left: 20px; transform: translateX(0); }
+    to   { left: calc(100% - 20px); transform: translateX(-100%); }
+  }
+  /* phones (and reduced motion): no drifting, just sit centered */
+  @media (pointer: coarse), (prefers-reduced-motion: reduce) { #tag a { animation: none; left: 50%; transform: translateX(-50%); } }
   /* record button — the only thing that shows a cursor */
   #rec {
     position: fixed; left: 50%; bottom: calc(28px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 5;
@@ -68,11 +86,12 @@
 </head>
 <body>
   <h1 id="word">모찌</h1>
+  <nav id="tag"><a href="https://www.instagram.com/tangimage_/" target="_blank" rel="noopener">탠지미지의 인터넷 모찌</a></nav>
   <video id="cam" playsinline muted autoplay aria-hidden="true"></video>
   <canvas id="gl" aria-hidden="true"></canvas>
   <canvas id="hud" aria-hidden="true"></canvas>
-  <button id="rec" title="녹화 (R)"><i></i><span>녹화</span></button>
-  <button id="save" hidden>영상 저장하기</button>
+  <button id="rec" title="REC (Space)"><i></i><span>REC</span></button>
+  <button id="save" hidden>인스타 스토리에 올리기</button>
   <div id="toast" role="status"></div>
 
 <script>
@@ -237,6 +256,7 @@
   const hands = new Map();          // id → { pinching, sx, sy (smoothed pinch point), tips }
 
   const isPhone = matchMedia('(pointer: coarse)').matches;
+  const detCanvas = document.createElement('canvas'), detCtx = detCanvas.getContext('2d');
   let delegate = null, Fileset = null, Landmarker = null;
 
   // MediaPipe's GPU path is unreliable on phones (esp. iOS Safari), so phones start on CPU;
@@ -255,15 +275,14 @@
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: isPhone
-          ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }    // lighter for phones
-          : { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { facingMode: 'user', width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
         audio: false
       });
       video.srcObject = stream;
       await video.play();
       video.classList.add('on');
       onCamera = true; build();
+      document.body.classList.add('cam');
     } catch (err) {
       console.warn('camera unavailable — mouse only', err);
       toast(err.name === 'NotAllowedError'
@@ -298,7 +317,11 @@
     if (!landmarker || video.readyState < 2 || video.currentTime === lastVideoTime) return;
     lastVideoTime = video.currentTime;
     let res;
-    try { res = landmarker.detectForVideo(video, now); }
+    // the detector only needs a small frame; feeding it a downscaled copy keeps the camera itself sharp
+    const long = isPhone ? 480 : 720, k = Math.min(1, long / Math.max(video.videoWidth, video.videoHeight));
+    detCanvas.width = Math.round(video.videoWidth * k); detCanvas.height = Math.round(video.videoHeight * k);
+    detCtx.drawImage(video, 0, 0, detCanvas.width, detCanvas.height);
+    try { res = landmarker.detectForVideo(detCanvas, now); }
     catch (err) {
       // a failing detector must never stop the animation loop
       console.warn('hand detection failed', err);
@@ -343,6 +366,7 @@
   // Camera + dough + chopsticks are composited into one canvas each frame and recorded from there,
   // so the saved video has no buttons on it.
   const recBtn = document.getElementById('rec'), toastEl = document.getElementById('toast');
+  const tagLink = document.querySelector('#tag a');
   const comp = document.createElement('canvas'), cx2 = comp.getContext('2d');
   let recorder = null, recStart = 0, recTimer = null;
 
@@ -361,9 +385,17 @@
     } else { cx2.fillStyle = '#fff'; cx2.fillRect(0, 0, w, h); }
     cx2.drawImage(cv, 0, 0, w, h);
     cx2.drawImage(hud, 0, 0, w, h);   // chopsticks
+    // the drifting credit line goes into the video too
+    const r = tagLink.getBoundingClientRect(), k = w / W;
+    cx2.font = `500 ${16 * k}px "KoPub Batang", serif`; cx2.textBaseline = 'middle';
+    if (onCamera) { cx2.fillStyle = '#fff'; cx2.shadowColor = 'rgba(0,0,0,.35)'; cx2.shadowBlur = 6 * k; cx2.shadowOffsetY = k; }
+    else cx2.fillStyle = '#111';
+    cx2.fillText(tagLink.textContent, r.left * k, (r.top + r.height / 2) * k);
+    cx2.shadowColor = 'transparent';
   }
 
   const saveBtn = document.getElementById('save');
+  const IG_TAG = '@tangimage_';
   function download(file) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(file); a.download = file.name; a.click();
@@ -392,12 +424,20 @@
         // share needs a fresh tap, so offer a button instead of opening it right away
         saveBtn.hidden = false;
         saveBtn.onclick = async () => {
-          try { await navigator.share({ files: [file] }); saveBtn.hidden = true; }
-          catch (err) { if (err.name !== 'AbortError') { download(file); saveBtn.hidden = true; } }
+          // the web can't pre-fill a story mention, so the tag rides along on the clipboard
+          navigator.clipboard?.writeText(IG_TAG).catch(() => {});
+          toast(`${IG_TAG} 복사됐어요 · 스토리에서 텍스트를 추가해 붙여넣으면 태그돼요`, 8000);
+          try {
+            await navigator.share({ files: [file] });   // pick Instagram → 스토리 (or 동영상 저장)
+            saveBtn.hidden = true;
+          } catch (err) {
+            if (err.name === 'NotAllowedError') toast('한 번 더 눌러주세요', 3000);
+            else if (err.name !== 'AbortError') { download(file); saveBtn.hidden = true; }
+          }
         };
       } else {
         download(file);
-        toast(`저장했어요 · ${name}`);
+        toast(`저장했어요 · 인스타 스토리는 휴대폰에서 올릴 수 있어요`, 4000);
       }
     };
     recorder.start(250);
@@ -406,7 +446,7 @@
     const label = recBtn.querySelector('span');
     const tick = () => {
       const t = Math.floor((performance.now() - recStart) / 1000);
-      label.textContent = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+      label.textContent = `REC ${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
     };
     tick(); recTimer = setInterval(tick, 250);
   }
@@ -415,12 +455,17 @@
     clearInterval(recTimer);
     recorder.stop(); recorder = null;
     recBtn.classList.remove('on');
-    recBtn.querySelector('span').textContent = '녹화';
+    recBtn.querySelector('span').textContent = 'REC';
   }
 
   const toggleRecording = () => recorder ? stopRecording() : startRecording();
-  recBtn.addEventListener('click', toggleRecording);
-  addEventListener('keydown', e => { if ((e.key === 'r' || e.key === 'R') && !e.metaKey && !e.ctrlKey) toggleRecording(); });
+  // blur after a click so a later Space press isn't also read as "click the focused button"
+  recBtn.addEventListener('click', () => { toggleRecording(); recBtn.blur(); });
+  // Space (or R): start recording, press again to stop and save
+  addEventListener('keydown', e => {
+    if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.code === 'Space' || e.key === 'r' || e.key === 'R') { e.preventDefault(); toggleRecording(); }
+  });
 
   // chopsticks follow the thumb and index finger (the mouse cursor is hidden, so this shows where the hand is)
   // tip/butt = where each stick's ends sit inside its cut-out PNG
