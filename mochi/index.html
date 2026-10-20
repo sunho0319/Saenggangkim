@@ -42,11 +42,12 @@
   }
   #tag a {
     position: absolute; top: 0; left: 20px; white-space: nowrap; pointer-events: auto; cursor: pointer;
-    font: 500 16px/24px "KoPub Batang", serif; color: #111; text-decoration: none;
+    font: 500 16px/24px "KoPub Batang", serif; color: #111;
+    text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 4px;   /* looks tappable */
     animation: drift 12s ease-in-out infinite alternate;
   }
   .cam #tag a { color: #fff; text-shadow: 0 1px 6px rgba(0,0,0,.35); }
-  #tag a:hover { text-decoration: underline; text-underline-offset: 4px; }
+  #tag a:hover { text-decoration-thickness: 2px; }
   @keyframes drift {
     from { left: 20px; transform: translateX(0); }
     to   { left: calc(100% - 20px); transform: translateX(-100%); }
@@ -91,7 +92,7 @@
   <canvas id="gl" aria-hidden="true"></canvas>
   <canvas id="hud" aria-hidden="true"></canvas>
   <button id="rec" title="REC (Space)"><i></i><span>REC</span></button>
-  <button id="save" hidden>인스타 스토리에 올리기</button>
+  <button id="save" hidden>인스타에 업로드하기</button>
   <div id="toast" role="status"></div>
 
 <script>
@@ -391,6 +392,8 @@
     if (onCamera) { cx2.fillStyle = '#fff'; cx2.shadowColor = 'rgba(0,0,0,.35)'; cx2.shadowBlur = 6 * k; cx2.shadowOffsetY = k; }
     else cx2.fillStyle = '#111';
     cx2.fillText(tagLink.textContent, r.left * k, (r.top + r.height / 2) * k);
+    const tw = cx2.measureText(tagLink.textContent).width, uy = (r.top + r.height / 2 + 12) * k;
+    cx2.fillRect(r.left * k, uy, tw, Math.max(1, k));   // underline, same as on screen
     cx2.shadowColor = 'transparent';
   }
 
