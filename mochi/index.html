@@ -8,7 +8,7 @@
   @font-face {
     font-family: "KoPub Batang";
     src: local("KoPubWorld Batang_Pro Medium"), local("KoPubWorldBatangPM"),
-         url("/mochi/fonts/KoPubWorldBatang-Medium-sub.woff2") format("woff2");   /* subset: only the characters this page uses */
+         url("/mochi/fonts/KoPubWorldBatang-Medium-sub3.woff2") format("woff2");   /* subset: only the characters this page uses */
     font-weight: 500;
     font-display: block;
   }
@@ -54,16 +54,24 @@
   }
   /* phones (and reduced motion): no drifting, just sit centered */
   @media (pointer: coarse), (prefers-reduced-motion: reduce) { #tag a { animation: none; left: 50%; transform: translateX(-50%); } }
-  /* record button — the only thing that shows a cursor */
-  #rec {
+  /* bottom controls — the only things that show a cursor */
+  #controls {
     position: fixed; left: 50%; bottom: calc(28px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 5;
+    display: flex; gap: 10px;
+  }
+  #rec, #filter, #captions {
     display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 18px 0 14px;
     border: 0; border-radius: 999px; background: rgba(0,0,0,.45); color: #fff;
     font: 600 14px/1 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif;
     backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); cursor: pointer;
     font-variant-numeric: tabular-nums; transition: background .2s;
   }
-  #rec:hover { background: rgba(0,0,0,.6); }
+  #rec:hover, #filter:hover, #captions:hover { background: rgba(0,0,0,.6); }
+  #captions { padding: 0 18px; white-space: nowrap; }
+  #captions.off { opacity: .6; }
+  #filter { padding: 0 18px; white-space: nowrap; }
+  #filter.on { background: rgba(255,255,255,.92); color: #111; }   /* lit while black & white is on */
+  #filter[hidden] { display: none; }
   #rec i { width: 14px; height: 14px; border-radius: 50%; background: #ff3b30; transition: border-radius .2s; }
   #rec.on i { border-radius: 3px; animation: blink 1s infinite; }
   @keyframes blink { 50% { opacity: .35; } }
@@ -82,7 +90,16 @@
     box-shadow: 0 6px 20px rgba(0,0,0,.25); cursor: pointer;
   }
   #save[hidden] { display: none; }
-  html, body, canvas { cursor: none; }
+  /* the system cursor is replaced by a soft white dot (#cursor) everywhere */
+  *, *::before, *::after { cursor: none !important; }
+  #cursor {
+    position: fixed; left: 0; top: 0; z-index: 9; width: 18px; height: 18px; margin: -9px 0 0 -9px;
+    border-radius: 50%; background: #fff; pointer-events: none;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.18), 0 2px 8px rgba(0,0,0,.25);
+    opacity: 0; transition: opacity .2s, scale .2s;
+  }
+  #cursor.show { opacity: 1; }
+  #cursor.over { scale: 1.6; }   /* hovering something clickable */
 </style>
 </head>
 <body>
@@ -91,9 +108,14 @@
   <video id="cam" playsinline muted autoplay aria-hidden="true"></video>
   <canvas id="gl" aria-hidden="true"></canvas>
   <canvas id="hud" aria-hidden="true"></canvas>
-  <button id="rec" title="REC (Space)"><i></i><span>REC</span></button>
+  <div id="controls">
+    <button id="captions" title="메세지 켜기/끄기 (T)">메세지 ON</button>
+    <button id="rec" title="REC (Space)"><i></i><span>REC</span></button>
+    <button id="filter" title="흑백 켜기/끄기 (F)" hidden>흑백</button>
+  </div>
   <button id="save" hidden>인스타에 업로드하기</button>
   <div id="toast" role="status"></div>
+  <div id="cursor" aria-hidden="true"></div>
 
 <script>
 (async () => {
@@ -122,7 +144,75 @@
   const prog = gl.createProgram();
   gl.attachShader(prog, sh(gl.VERTEX_SHADER, vs));
   gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fs));
+  gl.bindAttribLocation(prog, 0, 'aPos'); gl.bindAttribLocation(prog, 1, 'aUv');
   gl.linkProgram(prog); gl.useProgram(prog);
+
+  // camera background, drawn in WebGL so the filter looks the same on screen and in recordings
+  const bgVs = `
+    attribute vec2 aQuad; varying vec2 vS;
+    void main() { vS = vec2(aQuad.x + 1.0, 1.0 - aQuad.y) * 0.5; gl_Position = vec4(aQuad, 0.0, 1.0); }`;
+  const bgFs = `
+    precision mediump float;
+    uniform sampler2D uVid;
+    uniform vec2 uRes, uDisp, uOff, uTexel;
+    uniform float uMode, uTime;
+    varying vec2 vS;
+    float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    void main() {
+      vec2 px = vS * uRes;
+      // object-fit: cover + mirrored, same mapping as the hand tracker uses
+      vec2 uv = vec2(1.0 - (px.x - uOff.x) / uDisp.x, (px.y - uOff.y) / uDisp.y);
+      vec3 c = texture2D(uVid, uv).rgb;
+      if (uMode > 0.5) {
+        // 흑백: punchy monochrome with a little grain
+        float l = lum(c);
+        l = mix(l, smoothstep(0.03, 0.97, l), 0.4) * 0.95 + 0.02;
+        l += (hash(px + uTime) - 0.5) * 0.05;
+        c = vec3(l) * (1.0 - smoothstep(0.5, 0.9, length(vS - 0.5)) * 0.3);
+      }
+      gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+    }`;
+  const bgProg = gl.createProgram();
+  gl.attachShader(bgProg, sh(gl.VERTEX_SHADER, bgVs));
+  gl.attachShader(bgProg, sh(gl.FRAGMENT_SHADER, bgFs));
+  gl.bindAttribLocation(bgProg, 0, 'aQuad');
+  gl.linkProgram(bgProg);
+  const bgU = {};
+  ['uVid', 'uRes', 'uDisp', 'uOff', 'uTexel', 'uMode', 'uTime'].forEach(n => bgU[n] = gl.getUniformLocation(bgProg, n));
+  const quadBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  const vidTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, vidTex);
+  [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]
+    .forEach(([k, v]) => gl.texParameteri(gl.TEXTURE_2D, k, v));
+  let vidReady = false;
+
+  let filterMode = 0;   // 0 = original, 1 = black & white
+  try { filterMode = localStorage.getItem('mochi-bw') === '1' ? 1 : 0; } catch {}
+
+  function drawCamera(now) {
+    if (!onCamera || video.readyState < 2 || !video.videoWidth) return false;
+    gl.useProgram(bgProg);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, vidTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+    vidReady = true;
+    const vw = video.videoWidth, vh = video.videoHeight, sc = Math.max(W / vw, H / vh);
+    const dw = vw * sc, dh = vh * sc, t = Math.max(1, vh / 720);
+    gl.uniform1i(bgU.uVid, 0);
+    gl.uniform2f(bgU.uRes, W, H); gl.uniform2f(bgU.uDisp, dw, dh); gl.uniform2f(bgU.uOff, (W - dw) / 2, (H - dh) / 2);
+    gl.uniform2f(bgU.uTexel, t / vw, t / vh);
+    gl.uniform1f(bgU.uMode, filterMode); gl.uniform1f(bgU.uTime, (now % 10000) / 10);
+    gl.disable(gl.BLEND);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.disableVertexAttribArray(1);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.enable(gl.BLEND);
+    gl.useProgram(prog);
+    return true;
+  }
   const aPos = gl.getAttribLocation(prog, 'aPos'), aUv = gl.getAttribLocation(prog, 'aUv');
   const uRes = gl.getUniformLocation(prog, 'uRes');
   const posBuf = gl.createBuffer(), uvBuf = gl.createBuffer(), idxBuf = gl.createBuffer();
@@ -284,6 +374,7 @@
       video.classList.add('on');
       onCamera = true; build();
       document.body.classList.add('cam');
+      document.getElementById('filter').hidden = false;
     } catch (err) {
       console.warn('camera unavailable — mouse only', err);
       toast(err.name === 'NotAllowedError'
@@ -367,7 +458,6 @@
   // Camera + dough + chopsticks are composited into one canvas each frame and recorded from there,
   // so the saved video has no buttons on it.
   const recBtn = document.getElementById('rec'), toastEl = document.getElementById('toast');
-  const tagLink = document.querySelector('#tag a');
   const comp = document.createElement('canvas'), cx2 = comp.getContext('2d');
   let recorder = null, recStart = 0, recTimer = null;
 
@@ -378,23 +468,9 @@
 
   function composite() {
     const w = comp.width, h = comp.height;
-    if (video.classList.contains('on') && video.videoWidth) {
-      const vw = video.videoWidth, vh = video.videoHeight, s = Math.max(w / vw, h / vh);
-      cx2.save(); cx2.translate(w, 0); cx2.scale(-1, 1);        // mirrored, like the screen
-      cx2.drawImage(video, (w - vw * s) / 2, (h - vh * s) / 2, vw * s, vh * s);
-      cx2.restore();
-    } else { cx2.fillStyle = '#fff'; cx2.fillRect(0, 0, w, h); }
-    cx2.drawImage(cv, 0, 0, w, h);
+    if (!vidReady) { cx2.fillStyle = '#fff'; cx2.fillRect(0, 0, w, h); }
+    cx2.drawImage(cv, 0, 0, w, h);   // filtered camera + dough
     cx2.drawImage(hud, 0, 0, w, h);   // chopsticks
-    // the drifting credit line goes into the video too
-    const r = tagLink.getBoundingClientRect(), k = w / W;
-    cx2.font = `500 ${16 * k}px "KoPub Batang", serif`; cx2.textBaseline = 'middle';
-    if (onCamera) { cx2.fillStyle = '#fff'; cx2.shadowColor = 'rgba(0,0,0,.35)'; cx2.shadowBlur = 6 * k; cx2.shadowOffsetY = k; }
-    else cx2.fillStyle = '#111';
-    cx2.fillText(tagLink.textContent, r.left * k, (r.top + r.height / 2) * k);
-    const tw = cx2.measureText(tagLink.textContent).width, uy = (r.top + r.height / 2 + 12) * k;
-    cx2.fillRect(r.left * k, uy, tw, Math.max(1, k));   // underline, same as on screen
-    cx2.shadowColor = 'transparent';
   }
 
   const saveBtn = document.getElementById('save');
@@ -462,12 +538,25 @@
   }
 
   const toggleRecording = () => recorder ? stopRecording() : startRecording();
+
+  const filterBtn = document.getElementById('filter');
+  const showFilter = () => filterBtn.classList.toggle('on', filterMode === 1);
+  function nextFilter() {
+    if (!onCamera) return;
+    filterMode = 1 - filterMode;
+    try { localStorage.setItem('mochi-bw', filterMode); } catch {}
+    showFilter();
+  }
+  filterBtn.addEventListener('click', () => { nextFilter(); filterBtn.blur(); });
+  showFilter();
   // blur after a click so a later Space press isn't also read as "click the focused button"
   recBtn.addEventListener('click', () => { toggleRecording(); recBtn.blur(); });
   // Space (or R): start recording, press again to stop and save
   addEventListener('keydown', e => {
     if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.code === 'Space' || e.key === 'r' || e.key === 'R') { e.preventDefault(); toggleRecording(); }
+    else if (e.key === 'f' || e.key === 'F') nextFilter();
+    else if (e.key === 't' || e.key === 'T') toggleCaptions();
   });
 
   // chopsticks follow the thumb and index finger (the mouse cursor is hidden, so this shows where the hand is)
@@ -494,6 +583,76 @@
     hx.shadowColor = 'rgba(0,0,0,.25)'; hx.shadowBlur = 8; hx.shadowOffsetY = 3;
     for (const h of hands.values()) if (h.sticks) h.sticks.forEach((s, k) => drawStick(CHOPSTICKS[k], s));
     hx.shadowColor = 'transparent';
+    drawCaption(performance.now());
+  }
+
+  // ---------- cheer captions while stretching ----------
+  // a random line pops up above the word when a grab starts, then swaps slowly while held.
+  // Each line stays at least MIN_SHOW ms, so a flickering pinch can't make it jump around.
+  const PHRASES = [
+    '모찌를 양옆으로 쭈우우욱 늘려보세요', '모찌모찌하다 정말', '잘하고 있어요모찌!', '모오오오오오오오찌',
+    '기모찌모찌', '모찌이이이이이이이이이이이이이이이이이이', '모찌를 늘리는 당신 귀여워', '플러팅 방법 > 모찌를 선물한다.',
+  ];
+  const MIN_SHOW = 3500, HOLD_SWAP = 6000;
+  const cap = { text: '', a: 0, pick: -1, changeAt: 0, popAt: -Infinity };
+  let prevGrabIds = new Set();
+
+  let captionsOn = true;
+  try { captionsOn = localStorage.getItem('mochi-captions') !== '0'; } catch {}
+  const capBtn = document.getElementById('captions');
+  const showCaptions = () => { capBtn.textContent = captionsOn ? '메세지 ON' : '메세지 OFF'; capBtn.classList.toggle('off', !captionsOn); };
+  function toggleCaptions() {
+    captionsOn = !captionsOn;
+    try { localStorage.setItem('mochi-captions', captionsOn ? '1' : '0'); } catch {}
+    if (!captionsOn) cap.a = 0;   // gone right away (also from recordings)
+    showCaptions();
+  }
+  capBtn.addEventListener('click', () => { toggleCaptions(); capBtn.blur(); });
+  showCaptions();
+
+  function drawCaption(now) {
+    if (!captionsOn) return;
+    const ids = [...grabs.keys()];
+    const fresh = ids.some(id => !prevGrabIds.has(id));
+    prevGrabIds = new Set(ids);
+    const g = ids.length ? grabs.get(ids[ids.length - 1]) : null;
+    if (g && ((fresh && now - cap.popAt > MIN_SHOW) || now > cap.changeAt)) {
+      let i; do { i = Math.floor(Math.random() * PHRASES.length); } while (i === cap.pick && PHRASES.length > 1);
+      cap.pick = i; cap.text = PHRASES[i]; cap.changeAt = now + HOLD_SWAP; cap.popAt = now;
+    }
+    cap.a += ((g ? 1 : 0) - cap.a) * 0.06;
+    if (cap.a < 0.01 || !cap.text) return;
+
+    let fs = W <= 600 ? 18 : 24;
+    hx.font = `500 ${fs}px ${FONT}`;
+    const tw = hx.measureText(cap.text).width;
+    if (tw > W - 40) { fs *= (W - 40) / tw; hx.font = `500 ${fs}px ${FONT}`; }   // long lines shrink to fit phones
+    // centered just above the word, out of the way of the stretching dough
+    const x = W / 2, y = Math.max(fs + 64, H / 2 - box.size * 0.78) + Math.sin(now / 700) * 3;
+    const pop = 1 + 0.12 * Math.exp(-(now - cap.popAt) / 260);     // gentle bounce when the line changes
+    hx.save();
+    hx.translate(x, y); hx.scale(pop, pop);
+    hx.globalAlpha = cap.a; hx.textAlign = 'center'; hx.textBaseline = 'middle';
+    if (onCamera) { hx.fillStyle = '#fff'; hx.shadowColor = 'rgba(0,0,0,.4)'; hx.shadowBlur = 8; hx.shadowOffsetY = 1; }
+    else hx.fillStyle = '#111';
+    hx.fillText(cap.text, 0, 0);
+    hx.restore();
+  }
+
+  // ---------- cursor ----------
+  // a white dot for the mouse; it steps aside while a hand is in front of the camera or a recording is running
+  // (it's a page element, so it never ends up in the saved video either way)
+  const dot = document.getElementById('cursor');
+  let mouseIn = false;
+  addEventListener('pointermove', e => {
+    if (e.pointerType !== 'mouse') return;
+    mouseIn = true;
+    dot.style.translate = `${e.clientX}px ${e.clientY}px`;
+    dot.classList.toggle('over', !!e.target.closest?.('a, button'));
+  });
+  document.documentElement.addEventListener('pointerleave', () => mouseIn = false);
+  function updateCursor() {
+    dot.classList.toggle('show', mouseIn && !recorder && hands.size === 0);
   }
 
   let last = performance.now();
@@ -504,8 +663,11 @@
     trackHands(now);
     for (let s = 0; s < sub; s++) step(dt / sub);
     drawHud();
+    updateCursor();
 
     gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    drawCamera(now);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.uniform2f(uRes, W, H);
     gl.bindBuffer(gl.ARRAY_BUFFER, posBuf); gl.bufferData(gl.ARRAY_BUFFER, pos, gl.DYNAMIC_DRAW);
     gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
